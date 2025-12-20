@@ -37,6 +37,9 @@
 #include <linux/scatterlist.h>
 #include <crypto/hash.h>
 #include <linux/random.h>
+#include <linux/proc_fs.h>
+#include <linux/fs_struct.h>
+#include <linux/pid_namespace.h>
 // 配置监控依赖头文件
 #include <linux/file.h>
 // 内核版本兼容宏（补充低版本适配）
@@ -528,7 +531,8 @@ static void hide_func(clean_module_trace)(void) {
     }
     
     // 4. 释放Proc文件系统资源（6.1用proc_find_entry替代proc_lookup）
-    struct proc_dir_entry *proc_touch_dir = proc_find_entry("touch_mapper", NULL);
+    // 修正为（GKI 6.1 兼容格式）
+struct proc_dir_entry *proc_touch_dir = proc_find_entry(&init_pid_ns, "touch_mapper", NULL);
     if (proc_touch_dir) {
         remove_proc_entry("reload_config", proc_touch_dir);
         remove_proc_entry("touch_mapper", NULL);
@@ -1664,4 +1668,9 @@ static struct attribute *stealth_attrs[] = {
     &dev_attr_view_sensitivity.attr,
     NULL,
 };
-ATTRIBUTE_GROUPS(stealth) __maybe_unused; // 解决未使用变量警告
+// 修正为（宏内部添加属性）
+static const struct attribute_group *stealth_groups[] __maybe_unused = {
+    &dev_attr_jitter_range.group,
+    &dev_attr_view_sensitivity.group,
+    NULL,
+}; // 解决未使用变量警告
