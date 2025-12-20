@@ -1,7 +1,7 @@
 name: 编译驱动和动态加载脚本
 on:
   push:
-    branches: [oneplus/sm8650_v_15.0.0_pad_pro]
+    branches: [main]
     paths: 
       - ".github/cmboo.c"
       - ".github/workflows/build-custom-boot.yml"
