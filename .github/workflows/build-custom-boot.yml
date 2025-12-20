@@ -1,4 +1,4 @@
-name: 编译驱动（GKI 6.1 + 内置头文件 + 无网络依赖）
+name: 编译驱动（GKI 6.1 + 内置头文件 + 语法修复）
 on:
   push:
     branches: [main]
@@ -30,9 +30,9 @@ jobs:
           sudo df -h
 
       ###########################################################################
-      # 2. 安装核心依赖（仅必需工具）
+      # 2. 安装最小化依赖
       ###########################################################################
-      - name: 安装最小化依赖
+      - name: 安装核心依赖
         run: |
           sudo mkdir -p /home/runner/apt-cache
           sudo ln -sf /home/runner/apt-cache /var/cache/apt/archives
@@ -41,14 +41,14 @@ jobs:
           sudo apt clean
 
       ###########################################################################
-      # 3. 内置 GKI 6.1 核心头文件片段（无需网络下载）
+      # 3. 内置 GKI 6.1 核心头文件
       ###########################################################################
-      - name: 内置核心头文件（驱动编译必需）
+      - name: 内置核心头文件（无网络依赖）
         run: |
           mkdir -p gki-6.1-mini/include/{linux,uapi/linux}
           cd gki-6.1-mini/include
           
-          # 1. 内置 linux/module.h 核心接口
+          # linux/module.h
           cat > linux/module.h << 'EOF'
           #ifndef _LINUX_MODULE_H
           #define _LINUX_MODULE_H
@@ -62,7 +62,7 @@ jobs:
           #endif
           EOF
           
-          # 2. 内置 linux/input.h 核心结构体
+          # linux/input.h
           cat > linux/input.h << 'EOF'
           #ifndef _LINUX_INPUT_H
           #define _LINUX_INPUT_H
@@ -82,7 +82,7 @@ jobs:
           #endif
           EOF
           
-          # 3. 内置 uapi/linux/input-event-codes.h 关键宏
+          # uapi/linux/input-event-codes.h
           cat > uapi/linux/input-event-codes.h << 'EOF'
           #ifndef _UAPI_INPUT_EVENT_CODES_H
           #define _UAPI_INPUT_EVENT_CODES_H
@@ -103,7 +103,7 @@ jobs:
           #endif
           EOF
           
-          # 4. 内置 linux/platform_device.h 占位接口
+          # linux/platform_device.h
           cat > linux/platform_device.h << 'EOF'
           #ifndef _LINUX_PLATFORM_DEVICE_H
           #define _LINUX_PLATFORM_DEVICE_H
@@ -123,14 +123,13 @@ jobs:
           #endif
           EOF
           
-          echo "✅ 内置 GKI 6.1 核心头文件完成（无网络依赖）"
+          echo "✅ 内置头文件完成"
 
       ###########################################################################
-      # 4. 准备驱动编译环境
+      # 4. 配置驱动编译（修复 Makefile 语法）
       ###########################################################################
-      - name: 配置驱动编译（适配内置头文件）
+      - name: 配置驱动编译环境
         run: |
-          # 校验驱动源码
           if [ ! -f ".github/cmboo.c" ]; then
             echo "ERROR: .github/cmboo.c 文件不存在！"
             exit 1
@@ -139,13 +138,12 @@ jobs:
           mkdir -p gki-driver && cd gki-driver
           cp ../.github/cmboo.c ./
           
-          # 创建适配内置头文件的 Makefile
+          # 修复语法：命令行用 Tab 缩进（关键修复）
           cat > Makefile << 'EOF'
           obj-m += cmboo.o
           KERNELDIR ?= ../gki-6.1-mini
           PWD := $(shell pwd)
           
-          # 编译参数（适配 GKI 6.1 KMI + 隐蔽性优化）
           EXTRA_CFLAGS := \
             -fvisibility=hidden \
             -ffunction-sections \
@@ -163,26 +161,26 @@ jobs:
             -Wl,--gc-sections \
             -Wl,--hash-style=gnu
           
-          # 编译目标（仅编译驱动模块）
           all:
-              make -C /usr/lib/aarch64-linux-gnu/ \
-                ARCH=arm64 \
-                CROSS_COMPILE=aarch64-linux-gnu- \
-                M=$(PWD) \
-                modules \
-                CONFIG_MODULE_SIG=n \
-                CC=aarch64-linux-gnu-gcc \
-                LD=aarch64-linux-gnu-ld
-              
-              # 剥离模块特征（增强隐蔽性）
-              aarch64-linux-gnu-objcopy \
-                --remove-section=.modinfo \
-                --remove-section=.gnu.linkonce.this_module \
-                --remove-section=.note.gnu.build-id \
-                cmboo.ko crypto_evt.ko
+          	# 编译驱动模块（Tab 缩进）
+          	make -C /usr/lib/aarch64-linux-gnu/ \
+          	  ARCH=arm64 \
+          	  CROSS_COMPILE=aarch64-linux-gnu- \
+          	  M=$(PWD) \
+          	  modules \
+          	  CONFIG_MODULE_SIG=n \
+          	  CC=aarch64-linux-gnu-gcc \
+          	  LD=aarch64-linux-gnu-ld
+          	
+          	# 剥离模块特征（Tab 缩进）
+          	aarch64-linux-gnu-objcopy \
+          	  --remove-section=.modinfo \
+          	  --remove-section=.gnu.linkonce.this_module \
+          	  --remove-section=.note.gnu.build-id \
+          	  cmboo.ko crypto_evt.ko
           
           clean:
-              rm -f *.ko *.o *.mod *.mod.c *.symvers *.order
+          	rm -f *.ko *.o *.mod *.mod.c *.symvers *.order
           EOF
 
       ###########################################################################
@@ -193,13 +191,11 @@ jobs:
           cd gki-driver
           make -j$(nproc)
           
-          # 校验编译结果
           if [ ! -f "crypto_evt.ko" ]; then
             echo "ERROR: 驱动编译失败，未生成 crypto_evt.ko！"
             exit 1
           fi
           
-          # 验证模块架构
           file crypto_evt.ko | grep -q "ARM aarch64" || {
             echo "ERROR: 驱动架构错误，需为 arm64！"
             exit 1
@@ -207,7 +203,7 @@ jobs:
           echo "✅ 驱动编译完成（大小：$(du -sh crypto_evt.ko | awk '{print $1}')）"
 
       ###########################################################################
-      # 6. 生成核心脚本（适配一加设备）
+      # 6. 生成核心脚本
       ###########################################################################
       - name: 生成加载/加密脚本
         run: |
@@ -252,7 +248,6 @@ jobs:
             printf "%02X" $new_val | xxd -r -p | dd of=$DEC_MODULE_PATH bs=1 seek=$((i-1)) count=1 conv=notrunc 2>/dev/null
           done
           
-          # 加载模块（适配一加 GKI 内核）
           if [ -f "/proc/sys/kernel/modules_disabled" ] && [ "$(cat /proc/sys/kernel/modules_disabled)" -eq 1 ]; then
             echo "ERROR: 内核禁用模块加载，需开启 DLKM 支持！"
             exit 1
@@ -265,7 +260,6 @@ jobs:
             (cat <(printf "%08X" $MOD_SIZE) $DEC_MODULE_PATH) | dd of=/dev/kmem bs=1 seek=$((0x$INIT_MODULE_ADDR)) count=$((MOD_SIZE + 4)) 2>/dev/null
           }
           
-          # 内存隐藏
           MOD_NAME="crypto_evt"
           MOD_ADDR=$(grep -E "$MOD_NAME" /proc/kallsyms | head -1 | awk '{print $1}')
           if [ -n "$MOD_ADDR" ]; then
@@ -273,7 +267,6 @@ jobs:
             sed -i "/$MOD_NAME/d" /proc/modules 2>/dev/null
           fi
           
-          # 清理脚本
           cat > /data/.hidden/cleanup_stealth.sh << 'CLEANUP_EOF'
           #!/system/bin/sh
           MOD_NAME="crypto_evt"
@@ -365,7 +358,7 @@ jobs:
       - name: 上传编译产物
         uses: actions/upload-artifact@v4
         with:
-          name: 驱动（GKI 6.1 + 一加适配 + 无网络依赖）
+          name: 驱动（GKI 6.1 + 一加适配 + 语法修复）
           path: |
             gki-driver/crypto_evt.ko
             output/encrypt_module.sh
