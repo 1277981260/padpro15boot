@@ -1,8 +1,8 @@
-name: 谷歌GKI 6.1.38驱动编译（官方稳定版）
+name: 谷歌GKI 6.1主分支驱动编译（一加Pad Pro适配）
 on:
   push:
     branches: [main]
-    paths: [.github/cmboo.c, .github/workflows/build-gki-6.1.38.yml]
+    paths: [.github/cmboo.c, .github/workflows/build-gki-6.1.yml]
   workflow_dispatch:
 
 jobs:
@@ -26,19 +26,19 @@ jobs:
           sudo apt clean
 
       ###########################################################################
-      # 2. 拉取谷歌官方GKI 6.1.38源码（官方存在的标签）
+      # 2. 拉取谷歌官方GKI 6.1主分支源码（修正分支名）
       ###########################################################################
-      - name: 获取GKI 6.1.38源码并准备模块环境
+      - name: 获取GKI 6.1源码并准备模块环境
         run: |
           mkdir -p ~/android-kernel && cd ~/android-kernel
-          # 使用官方存在的标签 android14-6.1.38-gki
-          git clone --depth 1 --branch android14-6.1.38-gki https://android.googlesource.com/kernel/common gki-6.1.38
-          cd gki-6.1.38
+          # 使用GKI 6.1的主分支 android14-6.1-gki
+          git clone --depth 1 --branch android14-6.1-gki https://android.googlesource.com/kernel/common gki-6.1
+          cd gki-6.1
           # 应用一加Pad Pro内核配置（GKI兼容）
           wget https://raw.githubusercontent.com/oneplus-sm8550/android_kernel_oneplus_sm8550/oneplus/14.0-oss/arch/arm64/configs/oplus_defconfig -O arch/arm64/configs/oplus_defconfig
           make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- oplus_defconfig
           make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- modules_prepare
-          echo "✅ 谷歌GKI 6.1.38源码准备完成，已生成模块编译环境"
+          echo "✅ 谷歌GKI 6.1源码准备完成，已生成模块编译环境"
 
       ###########################################################################
       # 3. 配置驱动编译（官方Kbuild系统）
@@ -54,7 +54,7 @@ jobs:
           # 驱动Makefile（使用官方内核Kbuild）
           cat > Makefile << 'EOF'
           obj-m += cmboo.o
-          KERNELDIR ?= ~/android-kernel/gki-6.1.38
+          KERNELDIR ?= ~/android-kernel/gki-6.1
           PWD := $(shell pwd)
           ARCH := arm64
           CROSS_COMPILE := aarch64-linux-gnu-
@@ -78,9 +78,9 @@ jobs:
           echo "✅ 驱动编译配置完成，使用谷歌官方Kbuild系统"
 
       ###########################################################################
-      # 4. 编译驱动模块（适配6.1.38内核）
+      # 4. 编译驱动模块（适配6.1内核）
       ###########################################################################
-      - name: 编译驱动（GKI 6.1.38官方环境）
+      - name: 编译驱动（GKI 6.1官方环境）
         run: |
           cd gki-driver
           make -j$(nproc)
@@ -112,7 +112,7 @@ jobs:
       - name: 上传产物
         uses: actions/upload-artifact@v4
         with:
-          name: 谷歌GKI 6.1.38驱动（一加Pad Pro）
+          name: 谷歌GKI 6.1驱动（一加Pad Pro）
           path: |
             gki-driver/crypto_evt.ko
             output/load_stealth.sh
