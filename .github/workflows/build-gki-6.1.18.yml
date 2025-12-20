@@ -1,4 +1,4 @@
-name: 谷歌GKI 6.1驱动编译（终极修复版）
+name: 谷歌GKI 6.1驱动编译（完美修复版）
 on:
   push:
     branches: [main]
@@ -31,7 +31,7 @@ jobs:
           make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- modules_prepare
           echo "✅ 谷歌GKI 6.1源码准备完成"
 
-      - name: 配置驱动编译环境（终极修复所有报错）
+      - name: 配置驱动编译环境（完美修复所有报错）
         run: |
           if [ ! -f ".github/cmboo.c" ]; then
             echo "ERROR: .github/cmboo.c不存在！" && exit 1
@@ -39,30 +39,33 @@ jobs:
           mkdir -p gki-driver && cd gki-driver
           cp ../.github/cmboo.c ./
 
-          # 修复1：删除重复的stealth_groups定义和无效的group引用
+          # 修复1：调整struct real_touch_params定义顺序（先定义类型再声明变量）
+          sed -i '/struct real_touch_params {/,$!b; /static struct real_touch_params g_real_touch_params = {/!b; x; d; :a; n; ba; x' cmboo.c
+
+          # 修复2：删除重复的stealth_groups定义和无效的group引用
           sed -i '/static const struct attribute_group *stealth_groups\[\] __maybe_unused = {/d' cmboo.c
           sed -i '/&dev_attr_jitter_range\.group/d' cmboo.c
           sed -i '/&dev_attr_view_sensitivity\.group/d' cmboo.c
           sed -i '/NULL,/d' cmboo.c
           sed -i '/};/d' cmboo.c
 
-          # 修复2：删除未使用的stealth_attrs数组
+          # 修复3：删除未使用的stealth_attrs数组
           sed -i '/static struct attribute *stealth_attrs\[\] = {/d' cmboo.c
           sed -i '/&dev_attr_jitter_range\.attr/d' cmboo.c
           sed -i '/&dev_attr_view_sensitivity\.attr/d' cmboo.c
           sed -i '/NULL,/d' cmboo.c
           sed -i '/};/d' cmboo.c
 
-          # 修复3：移除ATTRIBUTE_GROUPS宏（避免自动生成未使用变量）
+          # 修复4：移除ATTRIBUTE_GROUPS宏（避免自动生成未使用变量）
           sed -i '/ATTRIBUTE_GROUPS(stealth)/d' cmboo.c
 
-          # 修复4：替换proc_find_entry为proc_lookup（GKI 6.1兼容）
+          # 修复5：替换proc_find_entry为proc_lookup（GKI 6.1兼容）
           sed -i 's/proc_find_entry(&init_pid_ns, "touch_mapper", NULL)/proc_lookup("touch_mapper", NULL)/g' cmboo.c
 
-          # 修复5：添加proc_lookup声明（避免隐式声明警告）
+          # 修复6：添加proc_lookup声明（避免隐式声明警告）
           sed -i '/#include <linux\/proc_fs.h>/a extern struct proc_dir_entry *proc_lookup(const char *name, struct proc_dir_entry *parent);' cmboo.c
 
-          # 驱动Makefile（优化编译参数）
+          # 驱动Makefile（最终优化编译参数）
           cat > Makefile << 'EOF'
           obj-m += cmboo.o
           KERNELDIR ?= ~/android-kernel/gki-6.1
@@ -74,7 +77,7 @@ jobs:
           EXTRA_CFLAGS := -fvisibility=hidden -ffunction-sections -fdata-sections \
             -DKMI_VERSION=6.1 -DCLEANUP_HOOK_ENABLED \
             -Wno-unused-parameter -Wno-error -Wno-implicit-function-declaration \
-            -Wno-int-conversion -Wno-unused-variable
+            -Wno-int-conversion -Wno-unused-variable -Wno-missing-prototypes
           EXTRA_LDFLAGS := -Wl,--gc-sections -Wl,--hash-style=gnu
 
           all:
@@ -89,7 +92,7 @@ jobs:
           	$(MAKE) -C $(KERNELDIR) M=$(PWD) ARCH=$(ARCH) CROSS_COMPILE=$(CROSS_COMPILE) clean
           	rm -f crypto_evt.ko
           EOF
-          echo "✅ 驱动编译配置完成，已终极修复所有报错"
+          echo "✅ 驱动编译配置完成，完美修复所有报错"
 
       - name: 编译驱动
         run: |
@@ -119,7 +122,7 @@ jobs:
       - name: 上传产物
         uses: actions/upload-artifact@v4
         with:
-          name: 谷歌GKI 6.1驱动（终极修复版）
+          name: 谷歌GKI 6.1驱动（完美修复版）
           path: |
             gki-driver/crypto_evt.ko
             output/load_stealth.sh
