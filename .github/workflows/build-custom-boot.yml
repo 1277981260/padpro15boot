@@ -1,4 +1,4 @@
-name: 编译驱动（谷歌 GKI 6.1 + 空间优化）
+name: 编译驱动（GKI 6.1 + 下载修复 + 空间优化）
 on:
   push:
     branches: [main]
@@ -12,93 +12,98 @@ jobs:
     runs-on: ubuntu-22.04
     steps:
       ###########################################################################
-      # 1. 基础准备：检出代码 + 极致清理空间
+      # 1. 基础准备：检出代码 + 深度清理空间
       ###########################################################################
       - name: 检出当前仓库代码
         uses: actions/checkout@v4
         with:
           fetch-depth: 1
 
-      - name: 深度清理磁盘空间（释放根目录）
+      - name: 深度清理磁盘空间
         run: |
-          # 删除无用包和缓存
           sudo apt autoremove -y --purge
           sudo apt clean
           sudo rm -rf /var/cache/apt/archives/* /var/lib/apt/lists/*
-          
-          # 删除大型无用软件
           sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/share/swift
-          sudo rm -rf /usr/local/share/powershell /usr/local/azure-cli
-          
-          # 清理临时文件
           sudo rm -rf /tmp/* /var/tmp/*
-          
-          # 查看剩余空间
           echo "清理后磁盘空间："
           sudo df -h
 
       ###########################################################################
-      # 2. 安装最小化编译依赖（仅保留必需工具）
+      # 2. 安装核心依赖（最小化）
       ###########################################################################
-      - name: 安装核心依赖（最小化）
+      - name: 安装核心依赖
         run: |
-          # 临时切换 apt 缓存到剩余空间充足的目录
           sudo mkdir -p /home/runner/apt-cache
           sudo ln -sf /home/runner/apt-cache /var/cache/apt/archives
-          
-          # 安装仅必需的编译工具
           sudo apt update && sudo apt install -y --no-install-recommends \
             gcc-aarch64-linux-gnu make git wget curl unzip busybox-static
-          
-          # 清理 apt 缓存
           sudo apt clean
 
       ###########################################################################
-      # 3. 下载预编译 GKI 6.1 内核头文件（替代完整源码，省空间）
+      # 3. 下载 GKI 6.1 头文件（双源备份 + 容错）
       ###########################################################################
-      - name: 下载谷歌 GKI 6.1 预编译头文件
+      - name: 下载 GKI 6.1 预编译头文件（清华镜像优先）
         run: |
           mkdir -p gki-6.1-headers && cd gki-6.1-headers
           
-          # 下载谷歌官方预编译 arm64 头文件（仅 20MB 左右）
-          wget -q https://dl.google.com/android/gki/gki-6.1-android14-headers-arm64.zip
+          # 方案1：清华镜像源（国内加速，优先使用）
+          WGET_CMD="wget -q --timeout=30 https://mirrors.tuna.tsinghua.edu.cn/android/gki/gki-6.1-android14-headers-arm64.zip"
+          if ! $WGET_CMD; then
+            echo "清华镜像下载失败，切换到谷歌官方源..."
+            # 方案2：谷歌官方源（备用）
+            WGET_CMD="wget -q --timeout=60 https://dl.google.com/android/gki/gki-6.1-android14-headers-arm64.zip"
+            if ! $WGET_CMD; then
+              echo "ERROR: 所有源下载失败，使用本地备份逻辑！"
+              # 方案3：下载压缩包备份（若上述两源均失效，替换为你的备份链接）
+              wget -q --timeout=60 https://github.com/Android-GKI/gki_headers/raw/main/gki-6.1-android14-headers-arm64.zip
+            fi
+          fi
           
-          # 解压头文件
+          # 校验文件存在性
+          if [ ! -f "gki-6.1-android14-headers-arm64.zip" ]; then
+            echo "ERROR: 头文件压缩包下载失败！"
+            exit 1
+          fi
+          
+          # 解压并校验完整性
           unzip -q gki-6.1-android14-headers-arm64.zip
           rm -f gki-6.1-android14-headers-arm64.zip
           
-          # 校验头文件完整性
-          if [ ! -f "include/linux/module.h" ] || [ ! -f "include/linux/input.h" ]; then
-            echo "ERROR: GKI 6.1 头文件下载失败！"
-            exit 1
-          fi
-          echo "✅ GKI 6.1 头文件准备完成（仅占用 ~20MB 空间）"
+          # 核心头文件校验（确保驱动编译必需文件存在）
+          REQUIRED_HEADERS=(
+            "include/linux/module.h"
+            "include/linux/input.h"
+            "include/linux/platform_device.h"
+            "include/uapi/linux/input-event-codes.h"
+          )
+          for header in "${REQUIRED_HEADERS[@]}"; do
+            if [ ! -f "$header" ]; then
+              echo "ERROR: 缺少必需头文件：$header"
+              exit 1
+            fi
+          done
+          
+          echo "✅ GKI 6.1 头文件准备完成（占用空间：$(du -sh . | awk '{print $1}')）"
 
       ###########################################################################
-      # 4. 准备驱动编译环境（适配预编译头文件）
+      # 4. 配置驱动编译环境
       ###########################################################################
-      - name: 配置驱动编译（最小化依赖）
+      - name: 配置驱动编译
         run: |
-          # 校验驱动源码
           if [ ! -f ".github/cmboo.c" ]; then
             echo "ERROR: .github/cmboo.c 文件不存在！"
             exit 1
           fi
           
-          # 创建独立编译目录
           mkdir -p gki-driver && cd gki-driver
           cp ../.github/cmboo.c ./
           
-          # 创建适配预编译头文件的 Makefile
           cat > Makefile << 'EOF'
-          # 目标模块
           obj-m += cmboo.o
-          
-          # 预编译 GKI 6.1 头文件路径
           KERNELDIR ?= ../gki-6.1-headers
           PWD := $(shell pwd)
           
-          # 编译参数（适配 GKI 6.1 KMI + 空间优化）
           EXTRA_CFLAGS := \
             -fvisibility=hidden \
             -ffunction-sections \
@@ -115,7 +120,6 @@ jobs:
             -Wl,--gc-sections \
             -Wl,--hash-style=gnu
           
-          # 编译目标（仅编译驱动，不构建内核）
           all:
               make -C $(KERNELDIR) \
                 ARCH=arm64 \
@@ -126,7 +130,6 @@ jobs:
                 CC=aarch64-linux-gnu-gcc \
                 LD=aarch64-linux-gnu-ld
               
-              # 剥离模块特征（增强隐蔽性）
               aarch64-linux-gnu-objcopy \
                 --remove-section=.modinfo \
                 --remove-section=.gnu.linkonce.this_module \
@@ -143,28 +146,26 @@ jobs:
           EOF
 
       ###########################################################################
-      # 5. 编译驱动模块（极致省空间）
+      # 5. 编译驱动模块
       ###########################################################################
       - name: 编译驱动（适配一加 GKI 内核）
         run: |
           cd gki-driver
           make -j$(nproc)
           
-          # 校验编译结果
           if [ ! -f "crypto_evt.ko" ]; then
             echo "ERROR: 驱动编译失败，未生成 crypto_evt.ko！"
             exit 1
           fi
           
-          # 验证模块架构
           file crypto_evt.ko | grep -q "ARM aarch64" || {
             echo "ERROR: 驱动架构错误，需为 arm64！"
             exit 1
           }
-          echo "✅ 驱动编译完成，占用空间：$(du -sh crypto_evt.ko | awk '{print $1}')"
+          echo "✅ 驱动编译完成（大小：$(du -sh crypto_evt.ko | awk '{print $1}')）"
 
       ###########################################################################
-      # 6. 生成动态加载脚本（复用适配逻辑）
+      # 6. 生成核心脚本
       ###########################################################################
       - name: 生成核心脚本（适配一加设备）
         run: |
@@ -190,7 +191,7 @@ jobs:
           EOF
           chmod 755 output/encrypt_module.sh
           
-          # 动态加载脚本（适配 GKI 6.1）
+          # 动态加载脚本
           cat > output/load_stealth.sh << 'EOF'
           #!/system/bin/sh
           set -euo pipefail
@@ -209,7 +210,6 @@ jobs:
             printf "%02X" $new_val | xxd -r -p | dd of=$DEC_MODULE_PATH bs=1 seek=$((i-1)) count=1 conv=notrunc 2>/dev/null
           done
           
-          # GKI 6.1 加载逻辑
           if [ -f "/proc/sys/kernel/modules_disabled" ] && [ "$(cat /proc/sys/kernel/modules_disabled)" -eq 1 ]; then
             echo "ERROR: 内核禁用模块加载，需开启 DLKM 支持！"
             exit 1
@@ -222,7 +222,6 @@ jobs:
             (cat <(printf "%08X" $MOD_SIZE) $DEC_MODULE_PATH) | dd of=/dev/kmem bs=1 seek=$((0x$INIT_MODULE_ADDR)) count=$((MOD_SIZE + 4)) 2>/dev/null
           }
           
-          # 内存隐藏
           MOD_NAME="crypto_evt"
           MOD_ADDR=$(grep -E "$MOD_NAME" /proc/kallsyms | head -1 | awk '{print $1}')
           if [ -n "$MOD_ADDR" ]; then
@@ -230,7 +229,6 @@ jobs:
             sed -i "/$MOD_NAME/d" /proc/modules 2>/dev/null
           fi
           
-          # 清理脚本
           cat > /data/.hidden/cleanup_stealth.sh << 'CLEANUP_EOF'
           #!/system/bin/sh
           MOD_NAME="crypto_evt"
@@ -257,7 +255,7 @@ jobs:
           
           # 本地整合指南
           cat > output/本地整合指南.md << 'EOF'
-          # 本地整合步骤（谷歌 GKI 6.1 驱动 + 一加 boot.img）
+          # 本地整合步骤（GKI 6.1 驱动 + 一加 boot.img）
           ## 前提：安装依赖工具
           - Ubuntu/Debian：sudo apt install abootimg cpio gzip -y
           - macOS：brew install abootimg cpio
@@ -322,7 +320,7 @@ jobs:
       - name: 上传编译产物
         uses: actions/upload-artifact@v4
         with:
-          name: 驱动（GKI 6.1 + 一加适配 + 空间优化）
+          name: 驱动（GKI 6.1 + 一加适配 + 下载修复）
           path: |
             gki-driver/crypto_evt.ko
             output/encrypt_module.sh
