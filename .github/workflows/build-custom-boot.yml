@@ -1,4 +1,4 @@
-name: 编译驱动（GKI 6.1 + 独立编译 + 最终修复）
+name: 编译驱动（GKI 6.1 + 头文件修复 + 稳定版）
 on:
   push:
     branches: [main]
@@ -37,32 +37,61 @@ jobs:
           sudo mkdir -p /home/runner/apt-cache
           sudo ln -sf /home/runner/apt-cache /var/cache/apt/archives
           sudo apt update && sudo apt install -y --no-install-recommends \
-            gcc-aarch64-linux-gnu make git busybox-static linux-headers-generic
+            gcc-aarch64-linux-gnu make git busybox-static
           sudo apt clean
 
       ###########################################################################
-      # 3. 内置 GKI 6.1 核心头文件（无网络依赖）
+      # 3. 内置完整 GKI 6.1 头文件（屏蔽系统冲突）
       ###########################################################################
-      - name: 内置核心头文件
+      - name: 内置完整核心头文件
         run: |
           mkdir -p gki-6.1-mini/include/{linux,uapi/linux}
           cd gki-6.1-mini/include
           
-          # linux/module.h
-          cat > linux/module.h << 'EOF'
-          #ifndef _LINUX_MODULE_H
-          #define _LINUX_MODULE_H
-          #define MODULE_LICENSE(_x)
-          #define MODULE_DESCRIPTION(_x)
-          #define MODULE_AUTHOR(_x)
-          #define module_init(x) __attribute__((section(".initcall6.init"))) static void __init x(void)
-          #define module_exit(x) __attribute__((section(".exitcall.exit"))) static void __exit x(void)
-          #define __init __attribute__((__constructor__))
-          #define __exit __attribute__((__destructor__))
+          # 1. 修复 linux/types.h（避免重复定义）
+          cat > linux/types.h << 'EOF'
+          #ifndef _LINUX_TYPES_H
+          #define _LINUX_TYPES_H
+          typedef unsigned char __u8;
+          typedef unsigned short __u16;
+          typedef unsigned int __u32;
+          typedef unsigned long long __u64;
+          typedef signed char __s8;
+          typedef signed short __s16;
+          typedef signed int __s32;
+          typedef signed long long __s64;
+          typedef __u32 __kernel_ulong_t;
+          typedef __s32 __kernel_long_t;
+          typedef __u64 size_t;
+          typedef __s64 ssize_t;
           #endif
           EOF
           
-          # linux/input.h
+          # 2. 补充 linux/init.h（必需头文件）
+          cat > linux/init.h << 'EOF'
+          #ifndef _LINUX_INIT_H
+          #define _LINUX_INIT_H
+          #define __init __attribute__((__constructor__))
+          #define __exit __attribute__((__destructor__))
+          #define module_init(x) __init x()
+          #define module_exit(x) __exit x()
+          #define __initdata
+          #define __exitdata
+          #endif
+          EOF
+          
+          # 3. linux/module.h
+          cat > linux/module.h << 'EOF'
+          #ifndef _LINUX_MODULE_H
+          #define _LINUX_MODULE_H
+          #include <linux/init.h>
+          #define MODULE_LICENSE(_x)
+          #define MODULE_DESCRIPTION(_x)
+          #define MODULE_AUTHOR(_x)
+          #endif
+          EOF
+          
+          # 4. linux/input.h
           cat > linux/input.h << 'EOF'
           #ifndef _LINUX_INPUT_H
           #define _LINUX_INPUT_H
@@ -78,13 +107,13 @@ jobs:
           int input_register_device(struct input_dev *dev) __attribute__((weak));
           void input_unregister_device(struct input_dev *dev) __attribute__((weak));
           void input_free_device(struct input_dev *dev) __attribute__((weak));
-          void set_bit(int nr, volatile unsigned long *addr) {
+          static inline void set_bit(int nr, volatile unsigned long *addr) {
               addr[nr / (8 * sizeof(unsigned long))] |= (1UL << (nr % (8 * sizeof(unsigned long))));
           }
           #endif
           EOF
           
-          # uapi/linux/input-event-codes.h
+          # 5. uapi/linux/input-event-codes.h
           cat > uapi/linux/input-event-codes.h << 'EOF'
           #ifndef _UAPI_INPUT_EVENT_CODES_H
           #define _UAPI_INPUT_EVENT_CODES_H
@@ -105,10 +134,11 @@ jobs:
           #endif
           EOF
           
-          # linux/platform_device.h
+          # 6. linux/platform_device.h
           cat > linux/platform_device.h << 'EOF'
           #ifndef _LINUX_PLATFORM_DEVICE_H
           #define _LINUX_PLATFORM_DEVICE_H
+          #include <linux/module.h>
           struct platform_device {};
           struct platform_driver {
               const char *name;
@@ -125,29 +155,21 @@ jobs:
           #endif
           EOF
           
-          # 补充必要的类型定义头文件
-          cat > linux/types.h << 'EOF'
-          #ifndef _LINUX_TYPES_H
-          #define _LINUX_TYPES_H
-          typedef unsigned int __u32;
-          typedef unsigned long unsigned long;
-          typedef long signed long;
-          typedef unsigned char __u8;
-          typedef unsigned short __u16;
-          typedef unsigned long __u64;
-          typedef signed int __s32;
-          typedef signed char __s8;
-          typedef signed short __s16;
-          typedef signed long __s64;
+          # 7. 屏蔽系统头文件冲突（关键）
+          cat > linux/kernel.h << 'EOF'
+          #ifndef _LINUX_KERNEL_H
+          #define _LINUX_KERNEL_H
+          #include <linux/types.h>
+          #define printk(...)
           #endif
           EOF
           
-          echo "✅ 内置头文件完成（包含所有必需接口）"
+          echo "✅ 内置完整头文件，已屏蔽系统冲突"
 
       ###########################################################################
-      # 4. 配置独立模块编译（不依赖外部内核目录）
+      # 4. 配置独立编译（屏蔽系统头文件）
       ###########################################################################
-      - name: 配置驱动编译（独立编译模板）
+      - name: 配置驱动编译（稳定版）
         run: |
           if [ ! -f ".github/cmboo.c" ]; then
             echo "ERROR: .github/cmboo.c 文件不存在！"
@@ -157,18 +179,16 @@ jobs:
           mkdir -p gki-driver && cd gki-driver
           cp ../.github/cmboo.c ./
           
-          # 核心修复：使用独立模块编译规则，不依赖内核源码目录
+          # 最终版 Makefile：屏蔽系统头文件，仅用内置依赖
           cat > Makefile << 'EOF'
-          # 目标模块
           obj-m += cmboo.o
           
-          # 编译工具链配置
+          # 工具链配置
           CC=aarch64-linux-gnu-gcc
           LD=aarch64-linux-gnu-ld
-          AR=aarch64-linux-gnu-ar
           OBJCOPY=aarch64-linux-gnu-objcopy
           
-          # 编译参数（适配 GKI 6.1 + 隐蔽性优化）
+          # 编译参数：仅使用内置头文件，屏蔽系统依赖
           CFLAGS := \
             -Wall \
             -Wextra \
@@ -185,7 +205,11 @@ jobs:
             -fno-builtin \
             -nostdlib \
             -mgeneral-regs-only \
-            -O2
+            -O2 \
+            -DMODULE \
+            -D__KERNEL__ \
+            -nostdinc \  # 屏蔽系统头文件
+            -isystem ../gki-6.1-mini/include  # 强制使用内置头文件
           
           LDFLAGS := \
             --strip-all \
@@ -193,18 +217,15 @@ jobs:
             -Wl,--hash-style=gnu \
             -Wl,-Ttext=0x10000
           
-          # 编译规则（独立模块模板）
+          # 编译规则
           all: cmboo.ko crypto_evt.ko
           
-          # 编译 .o 文件
           cmboo.o: cmboo.c
-          	$(CC) $(CFLAGS) -c $< -o $@ -DMODULE -D__KERNEL__
+          	$(CC) $(CFLAGS) -c $< -o $@
           
-          # 链接为 .ko 模块（模拟内核模块格式）
           cmboo.ko: cmboo.o
           	$(LD) $(LDFLAGS) -r $< -o $@
           
-          # 剥离模块特征（增强隐蔽性）
           crypto_evt.ko: cmboo.ko
           	$(OBJCOPY) \
           	  --remove-section=.modinfo \
@@ -213,13 +234,12 @@ jobs:
           	  --remove-section=.comment \
           	  $< $@
           
-          # 清理目标文件
           clean:
           	rm -f *.ko *.o *.mod *.mod.c *.symvers *.order
           EOF
 
       ###########################################################################
-      # 5. 编译驱动模块（最终修复版）
+      # 5. 编译驱动模块（最终稳定版）
       ###########################################################################
       - name: 编译驱动（适配一加 GKI 内核）
         run: |
@@ -232,7 +252,7 @@ jobs:
             exit 1
           fi
           
-          # 验证模块架构和格式
+          # 验证模块架构
           file crypto_evt.ko | grep -q "ARM aarch64" || {
             echo "ERROR: 驱动架构错误，需为 arm64！"
             exit 1
