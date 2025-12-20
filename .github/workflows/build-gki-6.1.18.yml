@@ -1,4 +1,4 @@
-name: 谷歌GKI 6.1主分支驱动编译（一加Pad Pro适配）
+name: 谷歌GKI 6.1驱动编译（一加Pad Pro适配）
 on:
   push:
     branches: [main]
@@ -26,13 +26,13 @@ jobs:
           sudo apt clean
 
       ###########################################################################
-      # 2. 拉取谷歌官方GKI 6.1主分支源码（修正分支名）
+      # 2. 拉取谷歌官方GKI 6.1源码（修正分支为 android14-6.1）
       ###########################################################################
       - name: 获取GKI 6.1源码并准备模块环境
         run: |
           mkdir -p ~/android-kernel && cd ~/android-kernel
-          # 使用GKI 6.1的主分支 android14-6.1-gki
-          git clone --depth 1 --branch android14-6.1-gki https://android.googlesource.com/kernel/common gki-6.1
+          # 使用正确的分支 android14-6.1
+          git clone --depth 1 --branch android14-6.1 https://android.googlesource.com/kernel/common gki-6.1
           cd gki-6.1
           # 应用一加Pad Pro内核配置（GKI兼容）
           wget https://raw.githubusercontent.com/oneplus-sm8550/android_kernel_oneplus_sm8550/oneplus/14.0-oss/arch/arm64/configs/oplus_defconfig -O arch/arm64/configs/oplus_defconfig
