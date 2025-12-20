@@ -1,4 +1,4 @@
-name: 谷歌GKI 6.1.38驱动编译（一加Pad Pro适配）
+name: 谷歌GKI 6.1.38驱动编译（修正仓库路径）
 on:
   push:
     branches: [main]
@@ -26,13 +26,13 @@ jobs:
           sudo apt clean
 
       ###########################################################################
-      # 2. 拉取谷歌官方GKI 6.1.38源码（修正仓库与标签）
+      # 2. 拉取谷歌官方GKI 6.1.38源码（修正仓库路径为 kernel/common）
       ###########################################################################
       - name: 获取GKI 6.1.38源码并准备模块环境
         run: |
           mkdir -p ~/android-kernel && cd ~/android-kernel
-          # 修正：使用 kernel/gki 仓库，标签使用存在的 android14-6.1.38-gki
-          git clone --depth 1 --branch android14-6.1.38-gki https://android.googlesource.com/kernel/gki gki-6.1.38
+          # 修正：使用 kernel/common 仓库
+          git clone --depth 1 --branch android14-6.1.38-gki https://android.googlesource.com/kernel/common gki-6.1.38
           cd gki-6.1.38
           # 应用一加Pad Pro内核配置（GKI兼容）
           wget https://raw.githubusercontent.com/oneplus-sm8550/android_kernel_oneplus_sm8550/oneplus/14.0-oss/arch/arm64/configs/oplus_defconfig -O arch/arm64/configs/oplus_defconfig
