@@ -1,1 +1,226 @@
+name: 编译驱动和动态加载脚本
+on:
+  push:
+    branches: [oneplus/sm8650_v_15.0.0_pad_pro]
+    paths: 
+      - ".github/cmboo.c"
+      - ".github/workflows/build-custom-boot.yml"
+  workflow_dispatch:
 
+jobs:
+  build-driver:
+    runs-on: ubuntu-22.04
+    steps:
+      ###########################################################################
+      # 1. 安装编译依赖
+      ###########################################################################
+      - name: 安装基础依赖
+        run: |
+          sudo apt update && sudo apt install -y \
+            gcc-aarch64-linux-gnu make git wget unzip libssl-dev flex bison libncurses5-dev busybox-static
+
+      ###########################################################################
+      # 2. 拉取内核源码
+      ###########################################################################
+      - name: 拉取内核源码（sm8650 15.0 分支）
+        run: |
+          git clone --depth 1 -b oneplus/sm8650_v_15.0.0_pad_pro \
+            https://github.com/OnePlusOSS/android_kernel_common_oneplus_sm8650.git kernel-src
+
+      ###########################################################################
+      # 3. 准备驱动编译环境
+      ###########################################################################
+      - name: 配置驱动编译规则
+        run: |
+          mkdir -p kernel-src/drivers/input/touch/
+          cp .github/cmboo.c kernel-src/drivers/input/touch/
+          
+          # 添加 Kconfig 和 Makefile
+          cat > kernel-src/drivers/input/touch/Kconfig << 'EOF'
+          config TOUCH_MAPPER_DRIVER
+              tristate "Stealth Touch Mapper Driver"
+              default m
+              help
+                Keyboard/Mouse to Touch Mapper Driver for OnePlus Pad Pro
+          EOF
+          
+          cat > kernel-src/drivers/input/touch/Makefile << 'EOF'
+          obj-$(CONFIG_TOUCH_MAPPER_DRIVER) += cmboo.o
+          EOF
+          
+          # 加入内核编译体系
+          echo 'source "drivers/input/touch/Kconfig"' >> kernel-src/drivers/input/Kconfig
+          echo 'obj-$(CONFIG_TOUCH_MAPPER_DRIVER) += touch/' >> kernel-src/drivers/input/Makefile
+
+      ###########################################################################
+      # 4. 编译驱动模块（含隐藏优化）
+      ###########################################################################
+      - name: 编译驱动（符号表剥离+模块伪装）
+        run: |
+          cd kernel-src
+          # 编译配置（适配 GKI 内核）
+          make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- defconfig vendor/oneplus/sm8650_defconfig
+          # 编译驱动（隐藏符号+剥离标识）
+          make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- -j$(nproc) modules \
+            EXTRA_CFLAGS="-fvisibility=hidden -ffunction-sections -fdata-sections -DCLEANUP_HOOK_ENABLED" \
+            EXTRA_LDFLAGS="--strip-all -Wl,--gc-sections"
+          
+          # 重命名+剥离模块信息
+          mv drivers/input/touch/cmboo.ko drivers/input/touch/crypto_evt.ko
+          aarch64-linux-gnu-objcopy --remove-section=.modinfo --remove-section=.gnu.linkonce.this_module \
+            drivers/input/touch/crypto_evt.ko drivers/input/touch/crypto_evt.ko
+
+      ###########################################################################
+      # 5. 生成动态加载/清理脚本
+      ###########################################################################
+      - name: 生成核心脚本（符号表锁+资源清理）
+        run: |
+          mkdir -p output/
+          
+          # 模块加密脚本（本地使用）
+          cat > output/encrypt_module.sh << 'EOF'
+          #!/bin/bash
+          ENC_KEY=0x7A
+          MODULE_PATH=$1
+          if [ ! -f $MODULE_PATH ]; then
+            echo "驱动文件不存在！"
+            exit 1
+          fi
+          # XOR 加密
+          dd if=$MODULE_PATH of=$MODULE_PATH.enc bs=1
+          for i in $(seq 1 $(stat -c %s $MODULE_PATH.enc)); do
+            val=$(dd if=$MODULE_PATH.enc bs=1 skip=$((i-1)) count=1 2>/dev/null | hexdump -v -e '/1 "%02X"')
+            new_val=$((0x$val ^ ENC_KEY))
+            printf "%02X" $new_val | xxd -r -p | dd of=$MODULE_PATH.enc bs=1 seek=$((i-1)) count=1 conv=notrunc 2>/dev/null
+          done
+          mv $MODULE_PATH.enc $MODULE_PATH
+          echo "驱动加密完成：$MODULE_PATH"
+          EOF
+          chmod 755 output/encrypt_module.sh
+          
+          # 动态加载脚本（本地注入 initramfs）
+          cat > output/load_stealth.sh << 'EOF'
+          #!/system/bin/sh
+          set -euo pipefail
+          LOCK_FILE="/data/.hidden/kallsyms.lock"
+          mkdir -p /data/.hidden/
+          flock -x -w 10 $LOCK_FILE || { echo "符号表锁定失败"; exit 1; }
+          trap 'flock -u $LOCK_FILE' EXIT
+          
+          # 解密模块
+          ENC_KEY=0x7A
+          MODULE_PATH="/data/.hidden/crypto_evt.ko"
+          DEC_MODULE_PATH="/data/.hidden/crypto_evt_dec.ko"
+          dd if=$MODULE_PATH of=$DEC_MODULE_PATH bs=1
+          for i in $(seq 1 $(stat -c %s $DEC_MODULE_PATH)); do
+            val=$(dd if=$DEC_MODULE_PATH bs=1 skip=$((i-1)) count=1 2>/dev/null | hexdump -v -e '/1 "%02X"')
+            new_val=$((0x$val ^ ENC_KEY))
+            printf "%02X" $new_val | xxd -r -p | dd of=$DEC_MODULE_PATH bs=1 seek=$((i-1)) count=1 conv=notrunc 2>/dev/null
+          done
+          
+          # 动态加载
+          INIT_MODULE_ADDR=$(grep -E 'init_module' /proc/kallsyms | head -1 | awk '{print $1}')
+          MOD_SIZE=$(stat -c %s $DEC_MODULE_PATH)
+          (cat <(printf "%08X" $MOD_SIZE) $DEC_MODULE_PATH) | dd of=/dev/kmem bs=1 seek=$((0x$INIT_MODULE_ADDR)) count=$((MOD_SIZE + 4)) 2>/dev/null
+          
+          # 内存隐藏
+          MOD_NAME="crypto_evt"
+          MOD_ADDR=$(grep -E "$MOD_NAME" /proc/kallsyms | head -1 | awk '{print $1}')
+          if [ -n "$MOD_ADDR" ]; then
+            echo -n -e "\x00\x00\x00\x00\x00\x00\x00\x00" | dd of=/dev/kmem bs=1 seek=$((0x$MOD_ADDR + 0x10)) count=8 conv=notrunc 2>/dev/null
+            echo "" > /proc/modules
+          fi
+          
+          # 资源清理脚本
+          cat > /data/.hidden/cleanup_stealth.sh << 'CLEANUP_EOF'
+          #!/system/bin/sh
+          MOD_NAME="crypto_evt"
+          MOD_ADDR=$(grep -E "$MOD_NAME" /proc/kallsyms 2>/dev/null | head -1 | awk '{print $1}')
+          if [ -n "$MOD_ADDR" ]; then
+            CLEANUP_FUNC_ADDR=$(grep -E 'cleanup_module_trace' /proc/kallsyms 2>/dev/null | head -1 | awk '{print $1}')
+            if [ -n "$CLEANUP_FUNC_ADDR" ]; then
+              dd if=/dev/zero of=/dev/kmem bs=1 seek=$((0x$CLEANUP_FUNC_ADDR)) count=1 2>/dev/null
+            fi
+            rmmod $MOD_NAME 2>/dev/null
+            rm -f /data/.hidden/crypto_evt_dec.ko
+          fi
+          CLEANUP_EOF
+          chmod 755 /data/.hidden/cleanup_stealth.sh
+          
+          # 触发初始化
+          echo "1" > /sys/class/input/input0/enable 2>/dev/null
+          rm -f $DEC_MODULE_PATH
+          echo "驱动加载完成！"
+          EOF
+          chmod 755 output/load_stealth.sh
+          
+          # 本地整合说明
+          cat > output/本地整合指南.md << 'EOF'
+          # 本地整合步骤（将驱动注入原厂 boot.img）
+          ## 前提：安装依赖工具
+          sudo apt install abootimg cpio gzip -y （Ubuntu/Debian）
+          # 或 macOS：brew install abootimg cpio
+          
+          ## 步骤1：准备文件
+          1. 原厂 boot.img 放在当前目录（命名为 stock_boot.img）
+          2. 本目录的 crypto_evt.ko、encrypt_module.sh、load_stealth.sh 放在同一目录
+          
+          ## 步骤2：加密驱动
+          chmod 755 encrypt_module.sh
+          ./encrypt_module.sh crypto_evt.ko
+          
+          ## 步骤3：解压 boot.img
+          mkdir -p boot_work && cd boot_work
+          abootimg -x ../stock_boot.img
+          mkdir initramfs && cd initramfs
+          gunzip -c ../initrd.img > initrd.cpio
+          cpio -idm < initrd.cpio
+          
+          ## 步骤4：注入驱动和脚本
+          # 创建隐藏目录
+          mkdir -p data/.hidden/
+          cp ../../crypto_evt.ko data/.hidden/
+          cp ../../load_stealth.sh data/.hidden/
+          chmod 755 data/.hidden/load_stealth.sh
+          
+          # 修改 init.rc 延迟加载
+          if [ -f root/init.rc ]; then
+            echo -e "\n# Stealth module load" >> root/init.rc
+            echo "service stealth_load /system/bin/sh -c 'sleep 30 && /data/.hidden/load_stealth.sh'" >> root/init.rc
+            echo "    class late_start" >> root/init.rc
+            echo "    user root" >> root/init.rc
+            echo "    group system root" >> root/init.rc
+            echo "    oneshot" >> root/init.rc
+            echo "    seclabel u:r:vendor_init:s0" >> root/init.rc
+          fi
+          
+          ## 步骤5：重新打包 initramfs
+          find . | cpio -o -H newc > ../new_initrd.cpio
+          gzip -c ../new_initrd.cpio > ../new_initrd.img
+          
+          ## 步骤6：重新打包 boot.img
+          cd ..
+          abootimg --create ../custom_boot.img \
+            -k zImage -r new_initrd.img \
+            -c "type=boot" -c "os_version=15.0" \
+            -c "board=sm8650" -c "cmdline=console=ttynull stack_depot_disable=on cgroup_disable=pressure"
+          
+          ## 步骤7：刷入设备
+          adb reboot bootloader
+          fastboot flash boot custom_boot.img
+          fastboot reboot
+          EOF
+
+      ###########################################################################
+      # 6. 上传产物（驱动+脚本+指南）
+      ###########################################################################
+      - name: 上传编译产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: 驱动和脚本（本地整合用）
+          path: |
+            kernel-src/drivers/input/touch/crypto_evt.ko
+            output/encrypt_module.sh
+            output/load_stealth.sh
+            output/本地整合指南.md
+          retention-days: 30
