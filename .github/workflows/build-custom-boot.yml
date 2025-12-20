@@ -20,86 +20,76 @@ jobs:
           fetch-depth: 1
 
       ###########################################################################
-      # 2. 安装编译依赖
+      # 2. 安装编译依赖（精简必要工具）
       ###########################################################################
       - name: 安装基础依赖
         run: |
           sudo apt update && sudo apt install -y \
-            gcc-aarch64-linux-gnu make git wget unzip libssl-dev flex bison libncurses5-dev busybox-static
+            gcc-aarch64-linux-gnu make git wget unzip busybox-static
 
       ###########################################################################
-      # 3. 拉取内核源码并校验
+      # 3. 准备独立驱动编译环境（不依赖完整内核）
       ###########################################################################
-      - name: 拉取内核源码（sm8650 15.0 分支）
+      - name: 配置独立驱动编译（免内核配置）
         run: |
-          git clone --depth 1 -b oneplus/sm8650_v_15.0.0_pad_pro \
-            https://github.com/OnePlusOSS/android_kernel_common_oneplus_sm8650.git kernel-src
-          # 校验内核源码目录完整性
-          if [ ! -d "kernel-src/drivers/input" ]; then
-            echo "ERROR: 内核源码拉取失败，目录不完整！"
-            exit 1
-          fi
-
-      ###########################################################################
-      # 4. 准备驱动编译环境
-      ###########################################################################
-      - name: 配置驱动编译规则（含文件校验）
-        run: |
+          # 校验驱动源码存在
           if [ ! -f ".github/cmboo.c" ]; then
             echo "ERROR: .github/cmboo.c 文件不存在！"
             exit 1
           fi
           
-          mkdir -p kernel-src/drivers/input/touch/
-          cp .github/cmboo.c kernel-src/drivers/input/touch/
+          # 创建独立编译目录
+          mkdir -p standalone-driver
+          cd standalone-driver
           
-          cat > kernel-src/drivers/input/touch/Kconfig << 'EOF'
-          config TOUCH_MAPPER_DRIVER
-              tristate "Stealth Touch Mapper Driver"
-              default m
-              help
-                Keyboard/Mouse to Touch Mapper Driver for OnePlus Pad Pro
+          # 复制驱动源码
+          cp ../.github/cmboo.c ./
+          
+          # 创建独立 Makefile（直接编译模块，不依赖内核 Kconfig）
+          cat > Makefile << 'EOF'
+          # 目标模块名
+          obj-m += cmboo.o
+          
+          # 内核源码路径（自动拉取最小依赖）
+          KERNELDIR ?= ./linux-kernel
+          PWD := $(shell pwd)
+          
+          # 编译参数（隐藏符号+剥离标识）
+          EXTRA_CFLAGS := -fvisibility=hidden -ffunction-sections -fdata-sections -DCLEANUP_HOOK_ENABLED
+          EXTRA_LDFLAGS := --strip-all -Wl,--gc-sections
+          
+          all:
+              # 拉取最小化内核头文件（仅用于编译模块）
+              if [ ! -d $(KERNELDIR) ]; then
+                  git clone --depth 1 -b v5.15 https://github.com/torvalds/linux.git $(KERNELDIR)
+                  # 配置内核头文件编译环境
+                  cd $(KERNELDIR) && make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- headers_install INSTALL_HDR_PATH=./headers
+              fi
+              # 编译驱动模块
+              make -C $(KERNELDIR) ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- M=$(PWD) modules
+              # 剥离模块信息（增强隐蔽性）
+              aarch64-linux-gnu-objcopy --remove-section=.modinfo --remove-section=.gnu.linkonce.this_module cmboo.ko crypto_evt.ko
+          
+          clean:
+              make -C $(KERNELDIR) ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- M=$(PWD) clean
+              rm -f crypto_evt.ko
           EOF
-          
-          cat > kernel-src/drivers/input/touch/Makefile << 'EOF'
-          obj-$(CONFIG_TOUCH_MAPPER_DRIVER) += cmboo.o
-          EOF
-          
-          if [ ! -f "kernel-src/drivers/input/Kconfig" ] || [ ! -f "kernel-src/drivers/input/Makefile" ]; then
-            echo "ERROR: 内核源码目录不完整，缺少 Kconfig/Makefile！"
-            exit 1
-          fi
-          echo 'source "drivers/input/touch/Kconfig"' >> kernel-src/drivers/input/Kconfig
-          echo 'obj-$(CONFIG_TOUCH_MAPPER_DRIVER) += touch/' >> kernel-src/drivers/input/Makefile
 
       ###########################################################################
-      # 5. 编译驱动模块（适配正确的内核配置）
+      # 4. 编译驱动模块（独立模式，免完整内核配置）
       ###########################################################################
-      - name: 编译驱动（符号表剥离+模块伪装）
+      - name: 编译驱动（独立模式）
         run: |
-          cd kernel-src
-          # 优先使用内核默认 defconfig，适配 GKI 架构
-          make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- defconfig
-          # 启用驱动配置（确保模块编译）
-          echo "CONFIG_TOUCH_MAPPER_DRIVER=m" >> .config
-          
-          # 编译驱动（多线程加速）
-          make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- -j$(nproc) modules \
-            EXTRA_CFLAGS="-fvisibility=hidden -ffunction-sections -fdata-sections -DCLEANUP_HOOK_ENABLED" \
-            EXTRA_LDFLAGS="--strip-all -Wl,--gc-sections"
-          
+          cd standalone-driver
+          make -j$(nproc)
           # 校验编译结果
-          if [ ! -f "drivers/input/touch/cmboo.ko" ]; then
-            echo "ERROR: 驱动编译失败，未生成 cmboo.ko！"
+          if [ ! -f "crypto_evt.ko" ]; then
+            echo "ERROR: 驱动编译失败，未生成 crypto_evt.ko！"
             exit 1
           fi
-          # 重命名+剥离模块信息
-          mv drivers/input/touch/cmboo.ko drivers/input/touch/crypto_evt.ko
-          aarch64-linux-gnu-objcopy --remove-section=.modinfo --remove-section=.gnu.linkonce.this_module \
-            drivers/input/touch/crypto_evt.ko drivers/input/touch/crypto_evt.ko
 
       ###########################################################################
-      # 6. 生成动态加载/清理脚本
+      # 5. 生成动态加载/清理脚本
       ###########################################################################
       - name: 生成核心脚本（符号表锁+资源清理）
         run: |
@@ -239,14 +229,14 @@ jobs:
           EOF
 
       ###########################################################################
-      # 7. 上传产物
+      # 6. 上传产物（驱动+脚本+指南）
       ###########################################################################
       - name: 上传编译产物
         uses: actions/upload-artifact@v4
         with:
           name: 驱动和脚本（本地整合用）
           path: |
-            kernel-src/drivers/input/touch/crypto_evt.ko
+            standalone-driver/crypto_evt.ko
             output/encrypt_module.sh
             output/load_stealth.sh
             output/本地整合指南.md
