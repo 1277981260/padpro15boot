@@ -1,4 +1,4 @@
-name: 谷歌GKI 6.1驱动编译（修复头文件引用）
+name: 谷歌GKI 6.1驱动编译（需手动修复代码）
 on:
   push:
     branches: [main]
@@ -9,9 +9,6 @@ jobs:
   build-driver:
     runs-on: ubuntu-22.04
     steps:
-      ###########################################################################
-      # 1. 基础准备与依赖安装
-      ###########################################################################
       - name: 检出代码
         uses: actions/checkout@v4
         with:
@@ -25,9 +22,6 @@ jobs:
           sudo pip3 install pyelftools
           sudo apt clean
 
-      ###########################################################################
-      # 2. 拉取谷歌官方GKI 6.1源码
-      ###########################################################################
       - name: 获取GKI 6.1源码并准备模块环境
         run: |
           mkdir -p ~/android-kernel && cd ~/android-kernel
@@ -35,11 +29,8 @@ jobs:
           cd gki-6.1
           make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- gki_defconfig
           make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- modules_prepare
-          echo "✅ 谷歌GKI 6.1源码准备完成，已生成模块编译环境"
+          echo "✅ 谷歌GKI 6.1源码准备完成"
 
-      ###########################################################################
-      # 3. 配置驱动编译（修补头文件引用）
-      ###########################################################################
       - name: 配置驱动编译环境
         run: |
           if [ ! -f ".github/cmboo.c" ]; then
@@ -48,10 +39,9 @@ jobs:
           mkdir -p gki-driver && cd gki-driver
           cp ../.github/cmboo.c ./
 
-          # 🔧 关键修复：将 <linux/inode.h> 替换为 <linux/fs.h>
+          # 仅修复头文件引用（其他错误需手动修复）
           sed -i 's/#include <linux\/inode.h>/#include <linux\/fs.h>/g' cmboo.c
 
-          # 驱动Makefile（使用官方内核Kbuild）
           cat > Makefile << 'EOF'
           obj-m += cmboo.o
           KERNELDIR ?= ~/android-kernel/gki-6.1
@@ -75,24 +65,17 @@ jobs:
           	$(MAKE) -C $(KERNELDIR) M=$(PWD) ARCH=$(ARCH) CROSS_COMPILE=$(CROSS_COMPILE) clean
           	rm -f crypto_evt.ko
           EOF
-          echo "✅ 驱动编译配置完成，已修补头文件引用"
+          echo "✅ 驱动编译配置完成"
 
-      ###########################################################################
-      # 4. 编译驱动模块
-      ###########################################################################
-      - name: 编译驱动（GKI 6.1官方环境）
+      - name: 编译驱动
         run: |
           cd gki-driver
           make -j$(nproc)
           
-          # 严格校验
           [ ! -f "crypto_evt.ko" ] && { echo "ERROR: crypto_evt.ko未生成！"; exit 1; }
           file crypto_evt.ko | grep -q "ARM aarch64" || { echo "ERROR: 架构错误！"; exit 1; }
           echo "✅ 驱动编译成功：$(du -sh crypto_evt.ko | awk '{print $1}')"
 
-      ###########################################################################
-      # 5. 生成加载脚本与产物上传
-      ###########################################################################
       - name: 生成加载脚本
         run: |
           mkdir -p output
@@ -112,7 +95,7 @@ jobs:
       - name: 上传产物
         uses: actions/upload-artifact@v4
         with:
-          name: 谷歌GKI 6.1驱动（通用适配）
+          name: 谷歌GKI 6.1驱动
           path: |
             gki-driver/crypto_evt.ko
             output/load_stealth.sh
