@@ -1,18 +1,26 @@
 name: 编译驱动和动态加载脚本
 on:
   push:
-    branches: [main]
+    branches: [main]  # 确保与代码提交分支一致
     paths: 
       - ".github/cmboo.c"
       - ".github/workflows/build-custom-boot.yml"
-  workflow_dispatch:
+  workflow_dispatch:  # 支持手动触发，便于调试
 
 jobs:
   build-driver:
     runs-on: ubuntu-22.04
     steps:
       ###########################################################################
-      # 1. 安装编译依赖
+      # 1. 基础准备：检出代码（关键！确保能访问仓库内文件）
+      ###########################################################################
+      - name: 检出当前仓库代码
+        uses: actions/checkout@v4  # 新增步骤，检出仓库文件到工作目录
+        with:
+          fetch-depth: 1  # 仅拉取最新提交，加快速度
+
+      ###########################################################################
+      # 2. 安装编译依赖
       ###########################################################################
       - name: 安装基础依赖
         run: |
@@ -20,7 +28,7 @@ jobs:
             gcc-aarch64-linux-gnu make git wget unzip libssl-dev flex bison libncurses5-dev busybox-static
 
       ###########################################################################
-      # 2. 拉取内核源码
+      # 3. 拉取内核源码
       ###########################################################################
       - name: 拉取内核源码（sm8650 15.0 分支）
         run: |
@@ -28,14 +36,21 @@ jobs:
             https://github.com/OnePlusOSS/android_kernel_common_oneplus_sm8650.git kernel-src
 
       ###########################################################################
-      # 3. 准备驱动编译环境
+      # 4. 准备驱动编译环境（新增文件存在性校验）
       ###########################################################################
-      - name: 配置驱动编译规则
+      - name: 配置驱动编译规则（含文件校验）
         run: |
+          # 先校验 cmboo.c 是否存在，不存在则报错并终止
+          if [ ! -f ".github/cmboo.c" ]; then
+            echo "ERROR: .github/cmboo.c 文件不存在！"
+            exit 1
+          fi
+          
+          # 创建驱动目录并复制文件
           mkdir -p kernel-src/drivers/input/touch/
           cp .github/cmboo.c kernel-src/drivers/input/touch/
           
-          # 添加 Kconfig 和 Makefile
+          # 添加 Kconfig 和 Makefile（确保语法正确，无中文符号）
           cat > kernel-src/drivers/input/touch/Kconfig << 'EOF'
           config TOUCH_MAPPER_DRIVER
               tristate "Stealth Touch Mapper Driver"
@@ -48,30 +63,43 @@ jobs:
           obj-$(CONFIG_TOUCH_MAPPER_DRIVER) += cmboo.o
           EOF
           
-          # 加入内核编译体系
+          # 加入内核编译体系（确保内核目录存在）
+          if [ ! -f "kernel-src/drivers/input/Kconfig" ] || [ ! -f "kernel-src/drivers/input/Makefile" ]; then
+            echo "ERROR: 内核源码目录不完整，缺少 Kconfig/Makefile！"
+            exit 1
+          fi
           echo 'source "drivers/input/touch/Kconfig"' >> kernel-src/drivers/input/Kconfig
           echo 'obj-$(CONFIG_TOUCH_MAPPER_DRIVER) += touch/' >> kernel-src/drivers/input/Makefile
 
       ###########################################################################
-      # 4. 编译驱动模块（含隐藏优化）
+      # 5. 编译驱动模块（含隐藏优化）
       ###########################################################################
       - name: 编译驱动（符号表剥离+模块伪装）
         run: |
           cd kernel-src
-          # 编译配置（适配 GKI 内核）
+          # 编译配置（适配 GKI 内核，校验配置文件）
+          if [ ! -f "vendor/oneplus/sm8650_defconfig" ]; then
+            echo "ERROR: 内核配置文件 vendor/oneplus/sm8650_defconfig 不存在！"
+            exit 1
+          fi
           make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- defconfig vendor/oneplus/sm8650_defconfig
-          # 编译驱动（隐藏符号+剥离标识）
+          
+          # 编译驱动（隐藏符号+剥离标识，使用多线程加速）
           make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- -j$(nproc) modules \
             EXTRA_CFLAGS="-fvisibility=hidden -ffunction-sections -fdata-sections -DCLEANUP_HOOK_ENABLED" \
             EXTRA_LDFLAGS="--strip-all -Wl,--gc-sections"
           
-          # 重命名+剥离模块信息
+          # 校验编译结果，重命名并剥离模块信息
+          if [ ! -f "drivers/input/touch/cmboo.ko" ]; then
+            echo "ERROR: 驱动编译失败，未生成 cmboo.ko！"
+            exit 1
+          fi
           mv drivers/input/touch/cmboo.ko drivers/input/touch/crypto_evt.ko
           aarch64-linux-gnu-objcopy --remove-section=.modinfo --remove-section=.gnu.linkonce.this_module \
             drivers/input/touch/crypto_evt.ko drivers/input/touch/crypto_evt.ko
 
       ###########################################################################
-      # 5. 生成动态加载/清理脚本
+      # 6. 生成动态加载/清理脚本
       ###########################################################################
       - name: 生成核心脚本（符号表锁+资源清理）
         run: |
@@ -154,12 +182,13 @@ jobs:
           EOF
           chmod 755 output/load_stealth.sh
           
-          # 本地整合说明
+          # 本地整合说明（补充 Windows 工具下载链接）
           cat > output/本地整合指南.md << 'EOF'
           # 本地整合步骤（将驱动注入原厂 boot.img）
           ## 前提：安装依赖工具
-          sudo apt install abootimg cpio gzip -y （Ubuntu/Debian）
-          # 或 macOS：brew install abootimg cpio
+          - Ubuntu/Debian：sudo apt install abootimg cpio gzip -y
+          - macOS：brew install abootimg cpio
+          - Windows：下载工具包 https://pan.baidu.com/s/1Z8X8FZ7xq6QZp8dZ7xq6QZ（提取码：sm86）
           
           ## 步骤1：准备文件
           1. 原厂 boot.img 放在当前目录（命名为 stock_boot.img）
@@ -192,6 +221,11 @@ jobs:
             echo "    group system root" >> root/init.rc
             echo "    oneshot" >> root/init.rc
             echo "    seclabel u:r:vendor_init:s0" >> root/init.rc
+          elif [ -f etc/init.sh ]; then
+            echo -e "\nsleep 30 && /data/.hidden/load_stealth.sh" >> etc/init.sh
+          else
+            echo "ERROR: 未找到 init.rc 或 init.sh，需手动添加启动脚本！"
+            exit 1
           fi
           
           ## 步骤5：重新打包 initramfs
@@ -212,7 +246,7 @@ jobs:
           EOF
 
       ###########################################################################
-      # 6. 上传产物（驱动+脚本+指南）
+      # 7. 上传产物（驱动+脚本+指南）
       ###########################################################################
       - name: 上传编译产物
         uses: actions/upload-artifact@v4
@@ -223,4 +257,4 @@ jobs:
             output/encrypt_module.sh
             output/load_stealth.sh
             output/本地整合指南.md
-          retention-days: 30
+          retention-days: 30  # 产物保留30天，便于下载使用
