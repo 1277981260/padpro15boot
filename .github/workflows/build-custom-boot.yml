@@ -1,4 +1,4 @@
-name: 编译驱动（GKI 6.1 + 头文件修复 + 稳定版）
+name: 编译驱动（GKI 6.1 + 语法终极修复 + 稳定版）
 on:
   push:
     branches: [main]
@@ -48,7 +48,7 @@ jobs:
           mkdir -p gki-6.1-mini/include/{linux,uapi/linux}
           cd gki-6.1-mini/include
           
-          # 1. 修复 linux/types.h（避免重复定义）
+          # 1. linux/types.h
           cat > linux/types.h << 'EOF'
           #ifndef _LINUX_TYPES_H
           #define _LINUX_TYPES_H
@@ -67,7 +67,7 @@ jobs:
           #endif
           EOF
           
-          # 2. 补充 linux/init.h（必需头文件）
+          # 2. linux/init.h
           cat > linux/init.h << 'EOF'
           #ifndef _LINUX_INIT_H
           #define _LINUX_INIT_H
@@ -155,7 +155,7 @@ jobs:
           #endif
           EOF
           
-          # 7. 屏蔽系统头文件冲突（关键）
+          # 7. linux/kernel.h
           cat > linux/kernel.h << 'EOF'
           #ifndef _LINUX_KERNEL_H
           #define _LINUX_KERNEL_H
@@ -167,9 +167,9 @@ jobs:
           echo "✅ 内置完整头文件，已屏蔽系统冲突"
 
       ###########################################################################
-      # 4. 配置独立编译（屏蔽系统头文件）
+      # 4. 配置独立编译（语法终极修复）
       ###########################################################################
-      - name: 配置驱动编译（稳定版）
+      - name: 配置驱动编译（语法规范版）
         run: |
           if [ ! -f ".github/cmboo.c" ]; then
             echo "ERROR: .github/cmboo.c 文件不存在！"
@@ -179,7 +179,7 @@ jobs:
           mkdir -p gki-driver && cd gki-driver
           cp ../.github/cmboo.c ./
           
-          # 最终版 Makefile：屏蔽系统头文件，仅用内置依赖
+          # Makefile 语法终极修复：反斜杠后无空格，命令行严格 Tab 缩进
           cat > Makefile << 'EOF'
           obj-m += cmboo.o
           
@@ -188,9 +188,8 @@ jobs:
           LD=aarch64-linux-gnu-ld
           OBJCOPY=aarch64-linux-gnu-objcopy
           
-          # 编译参数：仅使用内置头文件，屏蔽系统依赖
-          CFLAGS := \
-            -Wall \
+          # 编译参数（反斜杠后无空格，严格规范）
+          CFLAGS = -Wall \
             -Wextra \
             -fvisibility=hidden \
             -ffunction-sections \
@@ -208,16 +207,15 @@ jobs:
             -O2 \
             -DMODULE \
             -D__KERNEL__ \
-            -nostdinc \  # 屏蔽系统头文件
-            -isystem ../gki-6.1-mini/include  # 强制使用内置头文件
+            -nostdinc \
+            -isystem ../gki-6.1-mini/include
           
-          LDFLAGS := \
-            --strip-all \
+          LDFLAGS = --strip-all \
             -Wl,--gc-sections \
             -Wl,--hash-style=gnu \
             -Wl,-Ttext=0x10000
           
-          # 编译规则
+          # 编译规则（命令行严格 Tab 缩进）
           all: cmboo.ko crypto_evt.ko
           
           cmboo.o: cmboo.c
@@ -229,7 +227,7 @@ jobs:
           crypto_evt.ko: cmboo.ko
           	$(OBJCOPY) \
           	  --remove-section=.modinfo \
-          	  --remove-section=.gnu.linkonce.this_module \
+          	  --remove-section=.gnu.linkonceonce.this_module \
           	  --remove-section=.note.gnu.build-id \
           	  --remove-section=.comment \
           	  $< $@
@@ -239,7 +237,7 @@ jobs:
           EOF
 
       ###########################################################################
-      # 5. 编译驱动模块（最终稳定版）
+      # 5. 编译驱动模块（终极稳定版）
       ###########################################################################
       - name: 编译驱动（适配一加 GKI 内核）
         run: |
@@ -418,7 +416,7 @@ jobs:
       - name: 上传编译产物
         uses: actions/upload-artifact@v4
         with:
-          name: 驱动（GKI 6.1 + 一加适配 + 最终稳定版）
+          name: 驱动（GKI 6.1 + 一加适配 + 终极稳定版）
           path: |
             gki-driver/crypto_evt.ko
             output/encrypt_module.sh
