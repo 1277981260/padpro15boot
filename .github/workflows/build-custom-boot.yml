@@ -1,23 +1,23 @@
 name: 编译驱动和动态加载脚本
 on:
   push:
-    branches: [main]  # 确保与代码提交分支一致
+    branches: [main]
     paths: 
       - ".github/cmboo.c"
       - ".github/workflows/build-custom-boot.yml"
-  workflow_dispatch:  # 支持手动触发，便于调试
+  workflow_dispatch:
 
 jobs:
   build-driver:
     runs-on: ubuntu-22.04
     steps:
       ###########################################################################
-      # 1. 基础准备：检出代码（关键！确保能访问仓库内文件）
+      # 1. 基础准备：检出代码
       ###########################################################################
       - name: 检出当前仓库代码
-        uses: actions/checkout@v4  # 新增步骤，检出仓库文件到工作目录
+        uses: actions/checkout@v4
         with:
-          fetch-depth: 1  # 仅拉取最新提交，加快速度
+          fetch-depth: 1
 
       ###########################################################################
       # 2. 安装编译依赖
@@ -28,29 +28,31 @@ jobs:
             gcc-aarch64-linux-gnu make git wget unzip libssl-dev flex bison libncurses5-dev busybox-static
 
       ###########################################################################
-      # 3. 拉取内核源码
+      # 3. 拉取内核源码并校验
       ###########################################################################
       - name: 拉取内核源码（sm8650 15.0 分支）
         run: |
           git clone --depth 1 -b oneplus/sm8650_v_15.0.0_pad_pro \
             https://github.com/OnePlusOSS/android_kernel_common_oneplus_sm8650.git kernel-src
+          # 校验内核源码目录完整性
+          if [ ! -d "kernel-src/drivers/input" ]; then
+            echo "ERROR: 内核源码拉取失败，目录不完整！"
+            exit 1
+          fi
 
       ###########################################################################
-      # 4. 准备驱动编译环境（新增文件存在性校验）
+      # 4. 准备驱动编译环境
       ###########################################################################
       - name: 配置驱动编译规则（含文件校验）
         run: |
-          # 先校验 cmboo.c 是否存在，不存在则报错并终止
           if [ ! -f ".github/cmboo.c" ]; then
             echo "ERROR: .github/cmboo.c 文件不存在！"
             exit 1
           fi
           
-          # 创建驱动目录并复制文件
           mkdir -p kernel-src/drivers/input/touch/
           cp .github/cmboo.c kernel-src/drivers/input/touch/
           
-          # 添加 Kconfig 和 Makefile（确保语法正确，无中文符号）
           cat > kernel-src/drivers/input/touch/Kconfig << 'EOF'
           config TOUCH_MAPPER_DRIVER
               tristate "Stealth Touch Mapper Driver"
@@ -63,7 +65,6 @@ jobs:
           obj-$(CONFIG_TOUCH_MAPPER_DRIVER) += cmboo.o
           EOF
           
-          # 加入内核编译体系（确保内核目录存在）
           if [ ! -f "kernel-src/drivers/input/Kconfig" ] || [ ! -f "kernel-src/drivers/input/Makefile" ]; then
             echo "ERROR: 内核源码目录不完整，缺少 Kconfig/Makefile！"
             exit 1
@@ -72,28 +73,27 @@ jobs:
           echo 'obj-$(CONFIG_TOUCH_MAPPER_DRIVER) += touch/' >> kernel-src/drivers/input/Makefile
 
       ###########################################################################
-      # 5. 编译驱动模块（含隐藏优化）
+      # 5. 编译驱动模块（适配正确的内核配置）
       ###########################################################################
       - name: 编译驱动（符号表剥离+模块伪装）
         run: |
           cd kernel-src
-          # 编译配置（适配 GKI 内核，校验配置文件）
-          if [ ! -f "vendor/oneplus/sm8650_defconfig" ]; then
-            echo "ERROR: 内核配置文件 vendor/oneplus/sm8650_defconfig 不存在！"
-            exit 1
-          fi
-          make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- defconfig vendor/oneplus/sm8650_defconfig
+          # 优先使用内核默认 defconfig，适配 GKI 架构
+          make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- defconfig
+          # 启用驱动配置（确保模块编译）
+          echo "CONFIG_TOUCH_MAPPER_DRIVER=m" >> .config
           
-          # 编译驱动（隐藏符号+剥离标识，使用多线程加速）
+          # 编译驱动（多线程加速）
           make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- -j$(nproc) modules \
             EXTRA_CFLAGS="-fvisibility=hidden -ffunction-sections -fdata-sections -DCLEANUP_HOOK_ENABLED" \
             EXTRA_LDFLAGS="--strip-all -Wl,--gc-sections"
           
-          # 校验编译结果，重命名并剥离模块信息
+          # 校验编译结果
           if [ ! -f "drivers/input/touch/cmboo.ko" ]; then
             echo "ERROR: 驱动编译失败，未生成 cmboo.ko！"
             exit 1
           fi
+          # 重命名+剥离模块信息
           mv drivers/input/touch/cmboo.ko drivers/input/touch/crypto_evt.ko
           aarch64-linux-gnu-objcopy --remove-section=.modinfo --remove-section=.gnu.linkonce.this_module \
             drivers/input/touch/crypto_evt.ko drivers/input/touch/crypto_evt.ko
@@ -105,7 +105,7 @@ jobs:
         run: |
           mkdir -p output/
           
-          # 模块加密脚本（本地使用）
+          # 模块加密脚本
           cat > output/encrypt_module.sh << 'EOF'
           #!/bin/bash
           ENC_KEY=0x7A
@@ -114,7 +114,6 @@ jobs:
             echo "驱动文件不存在！"
             exit 1
           fi
-          # XOR 加密
           dd if=$MODULE_PATH of=$MODULE_PATH.enc bs=1
           for i in $(seq 1 $(stat -c %s $MODULE_PATH.enc)); do
             val=$(dd if=$MODULE_PATH.enc bs=1 skip=$((i-1)) count=1 2>/dev/null | hexdump -v -e '/1 "%02X"')
@@ -126,7 +125,7 @@ jobs:
           EOF
           chmod 755 output/encrypt_module.sh
           
-          # 动态加载脚本（本地注入 initramfs）
+          # 动态加载脚本
           cat > output/load_stealth.sh << 'EOF'
           #!/system/bin/sh
           set -euo pipefail
@@ -135,7 +134,6 @@ jobs:
           flock -x -w 10 $LOCK_FILE || { echo "符号表锁定失败"; exit 1; }
           trap 'flock -u $LOCK_FILE' EXIT
           
-          # 解密模块
           ENC_KEY=0x7A
           MODULE_PATH="/data/.hidden/crypto_evt.ko"
           DEC_MODULE_PATH="/data/.hidden/crypto_evt_dec.ko"
@@ -146,12 +144,10 @@ jobs:
             printf "%02X" $new_val | xxd -r -p | dd of=$DEC_MODULE_PATH bs=1 seek=$((i-1)) count=1 conv=notrunc 2>/dev/null
           done
           
-          # 动态加载
           INIT_MODULE_ADDR=$(grep -E 'init_module' /proc/kallsyms | head -1 | awk '{print $1}')
           MOD_SIZE=$(stat -c %s $DEC_MODULE_PATH)
           (cat <(printf "%08X" $MOD_SIZE) $DEC_MODULE_PATH) | dd of=/dev/kmem bs=1 seek=$((0x$INIT_MODULE_ADDR)) count=$((MOD_SIZE + 4)) 2>/dev/null
           
-          # 内存隐藏
           MOD_NAME="crypto_evt"
           MOD_ADDR=$(grep -E "$MOD_NAME" /proc/kallsyms | head -1 | awk '{print $1}')
           if [ -n "$MOD_ADDR" ]; then
@@ -159,7 +155,6 @@ jobs:
             echo "" > /proc/modules
           fi
           
-          # 资源清理脚本
           cat > /data/.hidden/cleanup_stealth.sh << 'CLEANUP_EOF'
           #!/system/bin/sh
           MOD_NAME="crypto_evt"
@@ -175,14 +170,13 @@ jobs:
           CLEANUP_EOF
           chmod 755 /data/.hidden/cleanup_stealth.sh
           
-          # 触发初始化
           echo "1" > /sys/class/input/input0/enable 2>/dev/null
           rm -f $DEC_MODULE_PATH
           echo "驱动加载完成！"
           EOF
           chmod 755 output/load_stealth.sh
           
-          # 本地整合说明（补充 Windows 工具下载链接）
+          # 本地整合说明
           cat > output/本地整合指南.md << 'EOF'
           # 本地整合步骤（将驱动注入原厂 boot.img）
           ## 前提：安装依赖工具
@@ -206,7 +200,6 @@ jobs:
           cpio -idm < initrd.cpio
           
           ## 步骤4：注入驱动和脚本
-          # 创建隐藏目录
           mkdir -p data/.hidden/
           cp ../../crypto_evt.ko data/.hidden/
           cp ../../load_stealth.sh data/.hidden/
@@ -246,7 +239,7 @@ jobs:
           EOF
 
       ###########################################################################
-      # 7. 上传产物（驱动+脚本+指南）
+      # 7. 上传产物
       ###########################################################################
       - name: 上传编译产物
         uses: actions/upload-artifact@v4
@@ -257,4 +250,4 @@ jobs:
             output/encrypt_module.sh
             output/load_stealth.sh
             output/本地整合指南.md
-          retention-days: 30  # 产物保留30天，便于下载使用
+          retention-days: 30
