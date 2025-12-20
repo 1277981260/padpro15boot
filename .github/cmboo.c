@@ -39,8 +39,6 @@
 #include <linux/random.h>
 // 配置监控依赖头文件
 #include <linux/file.h>
-#include <linux/inode.h>
-
 // 内核版本兼容宏（补充低版本适配）
 #ifndef KERNEL_VERSION
 #define KERNEL_VERSION(a,b,c) (((a) << 16) + ((b) << 8) + (c))
@@ -49,16 +47,13 @@
 #define msecs_to_jiffies(x) ((x) * HZ / 1000)
 #endif
 #define MY_LINUX_VERSION_CODE LINUX_VERSION_CODE
-
-// GKI内核兼容配置
+// GKI内核兼容配置（移除MODULE_FLAGS）
 #ifdef CONFIG_GKI_COMPAT
 #define GKI_MODULE_FLAGS MODULE_INIT_IGNORE_MODVERSIONS
 #else
 #define GKI_MODULE_FLAGS 0
 #endif
 MODULE_INFO(gki_compat, "true");
-MODULE_FLAGS(GKI_MODULE_FLAGS);
-
 // 调试开关（强制关闭，增强隐蔽性）
 #define DEBUG_MODE 0
 #if DEBUG_MODE
@@ -66,24 +61,20 @@ MODULE_FLAGS(GKI_MODULE_FLAGS);
 #else
 #define log_info(...) do {} while(0)
 #endif
-
 // 反检测核心配置
 #define HIDE_PROC_NAME "touch_mapper"
 #define COMM_AUTH_KEY "c2a2b5792edd296763fdfc72cff44380" // 32字节密钥（保留加密通信）
 #define KEY_LEN 32
 #define XOR_ENCRYPT_KEY 0x9D
 #define MD5_DIGEST_LEN 16
-
 // 视角配置常量
 #define VIEW_IDLE_TIMEOUT_MS 500
 #define VIEW_RESET_JITTER 15
-
 // 命令缓冲区大小定义
 #define MAX_CMD_LEN 256
 #define MAX_ENCRYPTED_LEN (MAX_CMD_LEN + MD5_DIGEST_LEN)
 #define MAX_COMBINED_LEN (MAX_CMD_LEN + KEY_LEN)
 #define MAX_DECRYPTED_LEN MAX_CMD_LEN
-
 // 真人触摸动态参数
 struct real_touch_params {
     int jitter_range;
@@ -101,12 +92,10 @@ static struct real_touch_params g_real_touch_params = {
     .pressure_max = 200,
     .click_delay_range = 20,
 };
-
 // 动作类型定义
 #define ACTION_CLICK              0
 #define ACTION_HOLD               1
 #define ACTION_FOLLOW_KEYBOARD    3
-
 // 内核参数（支持配置文件覆盖）
 static int screen_width = 3000;
 static int screen_height = 2120;
@@ -115,22 +104,18 @@ static int view_center_y = -1;
 static int view_max_radius = 0;
 static int view_deadzone = 10;
 static int view_sensitivity = 100;
-
 // 配置文件路径（固定为/data/smw.bin）
 static char config_save_path[256] = "/data/smw.bin";
-
 // 驱动/设备/类名称（深度伪装）
 #define DRIVER_NAME "input_touch_hid"
 #define DEVICE_NAME "touch_hid"
 #define CLASS_NAME "input_hid"
 #define INPUT_NAME "Android Native Touch Interface"
-
 // 基础定义
 #define MAGIC_SIGNATURE 0x51444953
 #define CMD_CHANNEL_NUM 5
 #define CMD_HEAD_LEN 1
 #define CMD_DIGEST_LEN MD5_DIGEST_LEN
-
 // 命令类型（含CMD_RELOAD_CONFIG）
 #define CMD_START_KEY_LEARN        0xAD
 #define CMD_STOP_KEY_LEARN         0xAE
@@ -142,12 +127,10 @@ static char config_save_path[256] = "/data/smw.bin";
 #define CMD_GET_REAL_TOUCH_PARAM   0x11
 #define CMD_SET_VIEW_AREA          0x12
 #define CMD_RELOAD_CONFIG          0xAC // 重新加载配置文件
-
 // 模式定义
 #define MODE_VIEW           1
 #define MODE_SILENT         3
 #define SLIDE_FOLLOW_MOUSE  2
-
 // 配置序列化结构体
 struct config_header {
     unsigned int magic;
@@ -174,7 +157,6 @@ struct global_config_serialize {
     int current_mode;
     struct view_area_serialize view_area;
 };
-
 // 按键映射结构体
 struct key_mapping {
     int keycode;
@@ -189,7 +171,6 @@ struct key_mapping {
     } params;
     struct key_mapping *next;
 };
-
 // 真人触摸状态结构体
 struct real_touch_state {
     int last_dx;
@@ -197,7 +178,6 @@ struct real_touch_state {
     unsigned long last_time;
     int pressure_offset;
 };
-
 // 核心配置结构体
 struct stealth_config {
     int activated;
@@ -268,7 +248,6 @@ struct stealth_config {
     unsigned long stats_commands;
     unsigned long stats_learned_keys;
 };
-
 // 设备结构体
 struct stealth_device {
     struct input_dev *input_dev;
@@ -307,17 +286,14 @@ struct stealth_device {
     struct crypto_shash *md5_tfm; // 加密算法句柄
 };
 static struct stealth_device *stealth_dev;
-
 // 配置文件监控结构体
 static struct file_monitor {
     struct delayed_work monitor_work;
     unsigned long last_mtime;  // 记录上次文件修改时间
 } config_monitor;
-
 // 函数名混淆宏
 #define _HIDE(x) x##_hide
 #define hide_func(x) _HIDE(x)
-
 // 提前声明所有函数（修复遗漏声明）
 static void hide_func(handle_key_binding)(int keycode, int value);
 static void hide_func(update_joystick_state)(int keycode, int value);
@@ -361,7 +337,6 @@ static void hide_func(stealth_input_disconnect)(struct input_handle *handle);
 static int hide_func(stealth_input_connect)(struct input_handler *handler, struct input_dev *dev, const struct input_device_id *id);
 static int hide_func(reload_smw_config)(void);
 static void hide_func(config_monitor_workfn)(struct work_struct *work);
-
 // 输入设备ID表
 static const struct input_device_id stealth_input_ids[] = {
     {
@@ -377,7 +352,6 @@ static const struct input_device_id stealth_input_ids[] = {
     { },
 };
 MODULE_DEVICE_TABLE(input, stealth_input_ids);
-
 // GKI内核兼容：输入处理器定义
 static struct input_handler stealth_input_handler = {
     .name = DRIVER_NAME,
@@ -386,7 +360,6 @@ static struct input_handler stealth_input_handler = {
     .connect = hide_func(stealth_input_connect),
     .disconnect = hide_func(stealth_input_disconnect),
 };
-
 // 输入工作队列处理函数
 static void hide_func(input_work_func)(struct work_struct *work) {
     struct stealth_device *dev = container_of(work, struct stealth_device, input_work);
@@ -434,7 +407,6 @@ static void hide_func(input_work_func)(struct work_struct *work) {
     }
     spin_unlock_irqrestore(&dev->config_lock, flags);
 }
-
 // 加密核心（保留，用于命令校验）
 static int hide_func(md5_hash)(const unsigned char *data, size_t len, unsigned char *digest) {
     struct shash_desc *desc;
@@ -458,14 +430,12 @@ static int hide_func(md5_hash)(const unsigned char *data, size_t len, unsigned c
     kfree(desc);
     return ret;
 }
-
 static void hide_func(xor_encrypt)(unsigned char *data, size_t len) {
     const unsigned char key = XOR_ENCRYPT_KEY;
     for (size_t i = 0; i < len; i++) {
         data[i] ^= key;
     }
 }
-
 static int hide_func(verify_command)(unsigned char *data, size_t len, unsigned char *cmd_out, size_t *cmd_len_out) {
     if (len < CMD_DIGEST_LEN) return -EINVAL;
     
@@ -494,24 +464,24 @@ static int hide_func(verify_command)(unsigned char *data, size_t len, unsigned c
     *cmd_len_out = data_len;
     return 0;
 }
-
 // 反检测核心：Proc隐藏 + 模块痕迹清理
 #if MY_LINUX_VERSION_CODE < KERNEL_VERSION(6,1,0)
 static int hide_func(my_filldir)(struct dir_context *ctx, const char *name, int namelen, loff_t offset, u64 ino, unsigned int d_type) {
-#else
-static bool hide_func(my_filldir)(struct dir_context *ctx, const char *name, int namelen, loff_t offset, u64 ino, unsigned int d_type);
-#endif
     if ((namelen == strlen(HIDE_PROC_NAME) && !strncmp(name, HIDE_PROC_NAME, namelen)) ||
         !strncmp(name, DRIVER_NAME, strlen(DRIVER_NAME))) {
-#if MY_LINUX_VERSION_CODE < KERNEL_VERSION(6,1,0)
         return 0;
-#else
-        return true;
-#endif
     }
     return stealth_dev->old_filldir(ctx, name, namelen, offset, ino, d_type);
 }
-
+#else
+static bool hide_func(my_filldir)(struct dir_context *ctx, const char *name, int namelen, loff_t offset, u64 ino, unsigned int d_type) {
+    if ((namelen == strlen(HIDE_PROC_NAME) && !strncmp(name, HIDE_PROC_NAME, namelen)) ||
+        !strncmp(name, DRIVER_NAME, strlen(DRIVER_NAME))) {
+        return true;
+    }
+    return stealth_dev->old_filldir(ctx, name, namelen, offset, ino, d_type);
+}
+#endif
 static int hide_func(kprobe_pre_handler)(struct kprobe *kp, struct pt_regs *regs) {
 #if MY_LINUX_VERSION_CODE < KERNEL_VERSION(6,1,0)
     struct dir_context *ctx = (struct dir_context *)regs->regs[1];
@@ -523,7 +493,6 @@ static int hide_func(kprobe_pre_handler)(struct kprobe *kp, struct pt_regs *regs
     ctx->actor = hide_func(my_filldir);
     return 0;
 }
-
 static void hide_func(clean_module_trace)(void) {
     struct module *mod = THIS_MODULE;
     char mod_path[64];
@@ -539,8 +508,8 @@ static void hide_func(clean_module_trace)(void) {
     
     mod->args = NULL;
     
-    // 1. 释放输入处理器资源
-    if (stealth_input_handler.devices) {
+    // 1. 释放输入处理器资源（6.1内核用h_list替代devices）
+    if (!list_empty(&stealth_input_handler.h_list)) {
         input_unregister_handler(&stealth_input_handler);
         pr_debug("Stealth: 输入处理器已卸载\n");
     }
@@ -558,8 +527,8 @@ static void hide_func(clean_module_trace)(void) {
         pr_debug("Stealth: 工作队列已销毁\n");
     }
     
-    // 4. 释放Proc文件系统资源（动态查找，避免未定义变量）
-    struct proc_dir_entry *proc_touch_dir = proc_lookup("touch_mapper", NULL);
+    // 4. 释放Proc文件系统资源（6.1用proc_find_entry替代proc_lookup）
+    struct proc_dir_entry *proc_touch_dir = proc_find_entry("touch_mapper", NULL);
     if (proc_touch_dir) {
         remove_proc_entry("reload_config", proc_touch_dir);
         remove_proc_entry("touch_mapper", NULL);
@@ -587,7 +556,6 @@ static void hide_func(clean_module_trace)(void) {
     
     pr_info("Stealth: 驱动资源清理完成，无内存泄漏\n");
 }
-
 static bool hide_func(init_proc_hide)(void) {
     struct kprobe *kp = &stealth_dev->kp_hide_proc;
     if (!stealth_dev) return false;
@@ -603,14 +571,12 @@ static bool hide_func(init_proc_hide)(void) {
     log_info("Proc hide initialized\n");
     return true;
 }
-
 static void hide_func(exit_proc_hide)(void) {
     if (stealth_dev) {
         unregister_kprobe(&stealth_dev->kp_hide_proc);
         log_info("Proc hide exited\n");
     }
 }
-
 // 真人触摸模拟核心函数
 static int hide_func(real_touch_get_pressure)(struct real_touch_state *state) {
     if (!state) return g_real_touch_params.pressure_min;
@@ -623,7 +589,6 @@ static int hide_func(real_touch_get_pressure)(struct real_touch_state *state) {
     pressure += state->pressure_offset;
     return clamp_val(pressure, g_real_touch_params.pressure_min, g_real_touch_params.pressure_max);
 }
-
 static void hide_func(real_touch_add_jitter)(int *x, int *y) {
     unsigned int rand_val;
     get_random_bytes(&rand_val, sizeof(rand_val));
@@ -634,7 +599,6 @@ static void hide_func(real_touch_add_jitter)(int *x, int *y) {
     *x += jx;
     *y += jy;
 }
-
 static void hide_func(real_touch_add_angle_offset)(int *x, int *y, int center_x, int center_y) {
     unsigned int rand_val;
     get_random_bytes(&rand_val, sizeof(rand_val));
@@ -650,7 +614,6 @@ static void hide_func(real_touch_add_angle_offset)(int *x, int *y, int center_x,
     *x = center_x + new_dx;
     *y = center_y + new_dy;
 }
-
 static void hide_func(send_real_touch_event)(int slot, int x, int y, int pressure, struct real_touch_state *state, int center_x, int center_y) {
     struct input_dev *dev = stealth_dev ? stealth_dev->input_dev : NULL;
     if (!dev || !stealth_dev->config.activated) return;
@@ -688,7 +651,6 @@ static void hide_func(send_real_touch_event)(int slot, int x, int y, int pressur
     input_sync(dev);
     stealth_dev->config.stats_moves++;
 }
-
 // 视角相关函数
 static void hide_func(view_idle_work_func)(struct work_struct *work) {
     struct stealth_device *dev = container_of(work, struct stealth_device, view_idle_work);
@@ -712,14 +674,12 @@ static void hide_func(view_idle_work_func)(struct work_struct *work) {
     }
     spin_unlock_irqrestore(&dev->config_lock, flags);
 }
-
 static void hide_func(view_idle_timer_func)(struct timer_list *t) {
     struct stealth_device *dev = from_timer(dev, t, view_idle_timer);
     if (dev && dev->workqueue) {
         queue_work(dev->workqueue, &dev->view_idle_work);
     }
 }
-
 static void hide_func(view_reset_work_func)(struct work_struct *work) {
     struct stealth_device *dev = container_of(work, struct stealth_device, view_reset_work);
     struct stealth_config *cfg = dev ? &dev->config : NULL;
@@ -747,7 +707,6 @@ static void hide_func(view_reset_work_func)(struct work_struct *work) {
     cfg->view.edge_reset_flag = false;
     spin_unlock_irqrestore(&dev->config_lock, flags);
 }
-
 static void hide_func(handle_view_move)(int dx, int dy) {
     struct stealth_config *cfg = stealth_dev ? &stealth_dev->config : NULL;
     if (!stealth_dev || !cfg->activated || !cfg->view.active) return;
@@ -788,7 +747,6 @@ static void hide_func(handle_view_move)(int dx, int dy) {
     
     spin_unlock_irqrestore(&stealth_dev->config_lock, flags);
 }
-
 // 滑动键处理
 static void hide_func(handle_slide_key)(int dx, int dy) {
     struct stealth_config *cfg = stealth_dev ? &stealth_dev->config : NULL;
@@ -815,7 +773,6 @@ static void hide_func(handle_slide_key)(int dx, int dy) {
     
     hide_func(send_real_touch_event)(3, current_x, current_y, 180, &cfg->slide_key.touch_state, cfg->slide_key.slide_x, cfg->slide_key.slide_y);
 }
-
 // 辅助函数
 static const char *hide_func(key_name)(int keycode) {
     if (keycode >= KEY_RESERVED && keycode <= KEY_MAX) {
@@ -846,7 +803,6 @@ static const char *hide_func(key_name)(int keycode) {
     }
     return NULL;
 }
-
 static void hide_func(generate_hidden_id)(unsigned char *id, int len) {
     int i;
     unsigned int rand_val;
@@ -862,7 +818,6 @@ static void hide_func(generate_hidden_id)(unsigned char *id, int len) {
     id[2] ^= (ts.tv_sec >> 8) & 0xFF;
     id[3] ^= ts.tv_sec & 0xFF;
 }
-
 // 视角区域初始化
 static void hide_func(init_view_area)(struct stealth_config *cfg) {
     if (!cfg) return;
@@ -896,7 +851,6 @@ static void hide_func(init_view_area)(struct stealth_config *cfg) {
     log_info("View area initialized: center=(%d,%d), radius=%d\n",
              cfg->view.center_x, cfg->view.center_y, cfg->view.max_radius);
 }
-
 static void hide_func(detect_screen_resolution)(struct stealth_config *cfg) {
     if (!cfg) return;
     
@@ -922,7 +876,6 @@ static void hide_func(detect_screen_resolution)(struct stealth_config *cfg) {
     memset(&cfg->joystick.touch_state, 0, sizeof(struct real_touch_state));
     memset(&stealth_dev->default_touch_state, 0, sizeof(struct real_touch_state));
 }
-
 static void hide_func(init_default_keymap)(struct stealth_config *cfg) {
     if (!cfg) return;
     
@@ -966,7 +919,6 @@ static void hide_func(init_default_keymap)(struct stealth_config *cfg) {
     
     log_info("Init default keymap: %d mappings\n", cfg->keymap_count);
 }
-
 // 配置保存/加载
 static int hide_func(save_stealth_config)(void) {
     struct stealth_config *cfg = stealth_dev ? &stealth_dev->config : NULL;
@@ -1035,7 +987,6 @@ err:
     log_info("Save config failed at pos %lld\n", pos);
     return -EIO;
 }
-
 static int hide_func(load_stealth_config)(void) {
     struct stealth_config *cfg = stealth_dev ? &stealth_dev->config : NULL;
     struct file *file;
@@ -1151,7 +1102,6 @@ load_default:
     hide_func(init_default_keymap)(cfg);
     return -EINVAL;
 }
-
 // 配置重载核心函数
 static int hide_func(reload_smw_config)(void) {
     struct file *file;
@@ -1197,14 +1147,12 @@ static int hide_func(reload_smw_config)(void) {
     filp_close(file, NULL);
     return ret;
 }
-
 // 配置监控工作队列回调（每2秒检查一次文件）
 static void hide_func(config_monitor_workfn)(struct work_struct *work) {
     hide_func(reload_smw_config)();
     // 重新调度工作，实现循环监控
     schedule_delayed_work(&config_monitor.monitor_work, msecs_to_jiffies(2000));
 }
-
 // 按键学习相关
 static void hide_func(learn_timeout_work_func)(struct work_struct *work) {
     struct stealth_config *cfg = stealth_dev ? &stealth_dev->config : NULL;
@@ -1215,14 +1163,12 @@ static void hide_func(learn_timeout_work_func)(struct work_struct *work) {
         log_info("Key learn timeout (no key pressed)\n");
     }
 }
-
 static void hide_func(learn_timeout_timer_func)(struct timer_list *t) {
     struct stealth_device *dev = from_timer(dev, t, learn_timeout_timer);
     if (dev && dev->workqueue) {
         queue_work(dev->workqueue, &dev->learn_timeout_work);
     }
 }
-
 static void hide_func(start_key_learn)(struct stealth_config *cfg) {
     if (!cfg || cfg->key_learn_active) return;
     
@@ -1233,7 +1179,6 @@ static void hide_func(start_key_learn)(struct stealth_config *cfg) {
     mod_timer(&stealth_dev->learn_timeout_timer, jiffies + msecs_to_jiffies(cfg->learn_timeout * 1000));
     log_info("Key learn started (timeout: %ds)\n", cfg->learn_timeout);
 }
-
 static void hide_func(stop_key_learn)(struct stealth_config *cfg) {
     if (!cfg || !cfg->key_learn_active) return;
     
@@ -1241,7 +1186,6 @@ static void hide_func(stop_key_learn)(struct stealth_config *cfg) {
     del_timer_sync(&stealth_dev->learn_timeout_timer);
     log_info("Key learn stopped\n");
 }
-
 static void hide_func(process_learned_key)(int code) {
     struct stealth_config *cfg = stealth_dev ? &stealth_dev->config : NULL;
     if (!cfg || !cfg->key_learn_active || code == -1) return;
@@ -1258,7 +1202,6 @@ static void hide_func(process_learned_key)(int code) {
     }
     cfg->stats_learned_keys++;
 }
-
 // 按键映射处理
 static struct key_mapping *hide_func(find_key_mapping)(int keycode) {
     struct stealth_config *cfg = stealth_dev ? &stealth_dev->config : NULL;
@@ -1271,7 +1214,6 @@ static struct key_mapping *hide_func(find_key_mapping)(int keycode) {
     }
     return NULL;
 }
-
 static void hide_func(handle_key_binding)(int keycode, int value) {
     struct key_mapping *km = hide_func(find_key_mapping)(keycode);
     if (!km || !stealth_dev || !stealth_dev->config.activated) return;
@@ -1288,7 +1230,6 @@ static void hide_func(handle_key_binding)(int keycode, int value) {
         stealth_dev->config.stats_clicks++;
     }
 }
-
 static void hide_func(update_joystick_state)(int keycode, int value) {
     struct stealth_config *cfg = stealth_dev ? &stealth_dev->config : NULL;
     if (!stealth_dev || !cfg->joystick.enabled || !cfg->activated) return;
@@ -1306,8 +1247,9 @@ static void hide_func(update_joystick_state)(int keycode, int value) {
     }
     
     int dx = 0, dy = 0;
+    // 修复cfgcfg笔误为cfg
     if (cfg->joystick.key_states & 0x01) dy -= 5;
-    if (cfgcfg->joystick.key_states & 0x02) dy += 5;
+    if (cfg->joystick.key_states & 0x02) dy += 5;
     if (cfg->joystick.key_states & 0x04) dx -= 5;
     if (cfg->joystick.key_states & 0x08) dx += 5;
     
@@ -1332,7 +1274,6 @@ static void hide_func(update_joystick_state)(int keycode, int value) {
     
     spin_unlock_irqrestore(&stealth_dev->config_lock, flags);
 }
-
 // IO控制与命令处理
 static long hide_func(stealth_ioctl)(struct file *filp, unsigned int cmd, unsigned long arg) {
     struct stealth_device *dev = filp->private_data;
@@ -1411,18 +1352,15 @@ static long hide_func(stealth_ioctl)(struct file *filp, unsigned int cmd, unsign
     
     return ret;
 }
-
 // 文件操作接口
 static int hide_func(stealth_open)(struct inode *inode, struct file *filp) {
     struct stealth_device *dev = container_of(inode->i_cdev, struct stealth_device, cdev);
     filp->private_data = dev;
     return 0;
 }
-
 static int hide_func(stealth_release)(struct inode *inode, struct file *filp) {
     return 0;
 }
-
 static const struct file_operations stealth_fops = {
     .owner = THIS_MODULE,
     .open = hide_func(stealth_open),
@@ -1432,7 +1370,6 @@ static const struct file_operations stealth_fops = {
     .compat_ioctl = hide_func(stealth_ioctl),
 #endif
 };
-
 // 输入事件处理
 static void hide_func(stealth_input_event)(struct input_handle *handle, unsigned int type, unsigned int code, int value) {
     struct stealth_device *dev = handle->private;
@@ -1451,11 +1388,9 @@ static void hide_func(stealth_input_event)(struct input_handle *handle, unsigned
     }
     spin_unlock_irqrestore(&dev->config_lock, flags);
 }
-
 static void hide_func(stealth_input_disconnect)(struct input_handle *handle) {
     input_close_device(handle);
 }
-
 // 输入处理器连接函数
 static int hide_func(stealth_input_connect)(struct input_handler *handler, struct input_dev *dev, const struct input_device_id *id) {
     struct stealth_device *sdev = stealth_dev;
@@ -1487,7 +1422,6 @@ static int hide_func(stealth_input_connect)(struct input_handler *handler, struc
     
     return 0;
 }
-
 // 驱动初始化
 static int __init stealth_driver_init(void) {
     int ret;
@@ -1501,172 +1435,165 @@ static int __init stealth_driver_init(void) {
     if (!stealth_dev) return -ENOMEM;
     
     // 初始化同步机制
-    mutex_init(&stealth_dev->lock);
-    spin_lock_init(&stealth_dev->config_lock);
-    init_waitqueue_head(&stealth_dev->cmd_waitq);
-    
-    // 生成隐藏设备ID
-    hide_func(generate_hidden_id)(stealth_dev->hidden_id, sizeof(stealth_dev->hidden_id));
-    
-    // 初始化输入设备
-    input_dev = input_allocate_device();
-    if (!input_dev) {
-        ret = -ENOMEM;
-        goto err_free_dev;
-    }
-    stealth_dev->input_dev = input_dev;
-    
-    // 设置输入设备信息
-    input_dev->name = INPUT_NAME;
-    input_dev->phys = "touch_mapper/input0";
-    input_dev->id.bustype = BUS_VIRTUAL;
-    input_dev->id.vendor = 0x1234;
-    input_dev->id.product = 0x5678;
-    input_dev->id.version = 0x0100;
-    
-    // 启用触摸相关事件类型
-    __set_bit(EV_ABS, input_dev->evbit);
-    __set_bit(EV_KEY, input_dev->evbit);
-    __set_bit(EV_SYN, input_dev->evbit);
-    __set_bit(BTN_TOUCH, input_dev->keybit);
-    
-    // 初始化多点触摸（修复INPUT_MT_DIRECT未定义问题）
-    input_mt_init_slots(input_dev, 10, 0);
-    
-    // 设置触摸参数范围
-    input_set_abs_params(input_dev, ABS_MT_POSITION_X, 0, 8192, 0, 0);
-    input_set_abs_params(input_dev, ABS_MT_POSITION_Y, 0, 8192, 0, 0);
-    input_set_abs_params(input_dev, ABS_MT_PRESSURE, 0, 255, 0, 0);
-    input_set_abs_params(input_dev, ABS_MT_TOUCH_MAJOR, 0, 30, 0, 0);
-    
-    // 注册输入设备
-    ret = input_register_device(input_dev);
-    if (ret) goto err_free_input;
-    
-    // 注册字符设备（用于用户态通信）
-    ret = alloc_chrdev_region(&stealth_dev->devno, 0, 1, DRIVER_NAME);
-    if (ret) goto err_unregister_input;
-    cdev_init(&stealth_dev->cdev, &stealth_fops);
-    stealth_dev->cdev.owner = THIS_MODULE;
-    ret = cdev_add(&stealth_dev->cdev, stealth_dev->devno, 1);
-    if (ret) goto err_unregister_chrdev;
-    
-    // 创建设备类
-    stealth_dev->class = class_create(THIS_MODULE, CLASS_NAME);
-    if (IS_ERR(stealth_dev->class)) {
-        ret = PTR_ERR(stealth_dev->class);
-        goto err_del_cdev;
-    }
-    
-    // 创建设备节点（/dev/touch_hid）
-    stealth_dev->device = device_create(stealth_dev->class, NULL, stealth_dev->devno, NULL, DEVICE_NAME);
-    if (IS_ERR(stealth_dev->device)) {
-        ret = PTR_ERR(stealth_dev->device);
-        goto err_destroy_class;
-    }
-    
-    // 初始化工作队列
-    stealth_dev->workqueue = create_singlethread_workqueue(DRIVER_NAME);
-    if (!stealth_dev->workqueue) {
-        ret = -ENOMEM;
-        goto err_destroy_device;
-    }
-    
-    // 初始化工作项
-    INIT_WORK(&stealth_dev->input_work, hide_func(input_work_func));
-    INIT_WORK(&stealth_dev->learn_timeout_work, hide_func(learn_timeout_work_func));
-    INIT_WORK(&stealth_dev->view_idle_work, hide_func(view_idle_work_func));
-    INIT_WORK(&stealth_dev->view_reset_work, hide_func(view_reset_work_func));
-    
-    // 初始化定时器（仅保留有用的两个）
-    timer_setup(&stealth_dev->learn_timeout_timer, hide_func(learn_timeout_timer_func), 0);
-    timer_setup(&stealth_dev->view_idle_timer, hide_func(view_idle_timer_func), 0);
-    
-    // 初始化 MD5 加密算法（优化失败处理）
-    stealth_dev->md5_tfm = crypto_alloc_shash("md5", 0, 0);
-    if (IS_ERR(stealth_dev->md5_tfm)) {
-        ret = PTR_ERR(stealth_dev->md5_tfm);
-        stealth_dev->md5_tfm = NULL; // 避免野指针
-        goto err_destroy_workqueue;
-    }
-    
-    // 注册输入处理器
-    ret = input_register_handler(&stealth_input_handler);
-    if (ret) goto err_free_crypto;
-    
-    // 初始化配置（开机自动加载/data/smw.bin）
-    hide_func(detect_screen_resolution)(&stealth_dev->config);
-    hide_func(init_default_keymap)(&stealth_dev->config);
-    hide_func(load_stealth_config)();
-    
-    // 启用 Proc 隐藏
-    if (!hide_func(init_proc_hide)()) {
-        log_info("Proc hide init warning\n");
-    }
-    
-    // 初始化配置监控（实时响应配置变更）
-    INIT_DELAYED_WORK(&config_monitor.monitor_work, hide_func(config_monitor_workfn));
-    // 首次延迟1秒启动监控（避免与其他初始化冲突）
-    schedule_delayed_work(&config_monitor.monitor_work, msecs_to_jiffies(1000));
-    log_info("Config monitor started, real-time response to changes\n");
-    
-    // 驱动加载成功日志
-    log_info("Stealth touch mapper driver loaded (v4.2 FINAL) - config path: %s\n", config_save_path);
-    return 0;
-    
-    // 错误处理流程（完整链路，无资源泄漏）
-err_free_crypto:
-    crypto_free_shash(stealth_dev->md5_tfm);
-err_destroy_workqueue:
-    destroy_workqueue(stealth_dev->workqueue);
-err_destroy_device:
-    device_destroy(stealth_dev->class, stealth_dev->devno);
-err_destroy_class:
-    class_destroy(stealth_dev->class);
-err_del_cdev:
-    cdev_del(&stealth_dev->cdev);
-err_unregister_chrdev:
-    unregister_chrdev_region(stealth_dev->devno, 1);
-err_unregister_input:
-    input_unregister_device(input_dev);
-err_free_input:
-    input_free_device(input_dev);
-err_free_dev:
-    kfree(stealth_dev);
-    return ret;
+mutex_init(&stealth_dev->lock);
+spin_lock_init(&stealth_dev->config_lock);
+init_waitqueue_head(&stealth_dev->cmd_waitq);
+
+// 生成隐藏设备ID
+hide_func(generate_hidden_id)(stealth_dev->hidden_id, sizeof(stealth_dev->hidden_id));
+
+// 初始化输入设备
+input_dev = input_allocate_device();
+if (!input_dev) {
+    ret = -ENOMEM;
+    goto err_free_dev;
+}
+stealth_dev->input_dev = input_dev;
+
+// 设置输入设备信息
+input_dev->name = INPUT_NAME;
+input_dev->phys = "touch_mapper/input0";
+input_dev->id.bustype = BUS_VIRTUAL;
+input_dev->id.vendor = 0x1234;
+input_dev->id.product = 0x5678;
+input_dev->id.version = 0x0100;
+
+// 启用触摸相关事件类型
+__set_bit(EV_ABS, input_dev->evbit);
+__set_bit(EV_KEY, input_dev->evbit);
+__set_bit(EV_SYN, input_dev->evbit);
+__set_bit(BTN_TOUCH, input_dev->keybit);
+
+// 初始化多点触摸（修复INPUT_MT_DIRECT未定义问题）
+input_mt_init_slots(input_dev, 10, 0);
+
+// 设置触摸参数范围
+input_set_abs_params(input_dev, ABS_MT_POSITION_X, 0, 8192, 0, 0);
+input_set_abs_params(input_dev, ABS_MT_POSITION_Y, 0, 8192, 0, 0);
+input_set_abs_params(input_dev, ABS_MT_PRESSURE, 0, 255, 0, 0);
+input_set_abs_params(input_dev, ABS_MT_TOUCH_MAJOR, 0, 30, 0, 0);
+
+// 注册输入设备
+ret = input_register_device(input_dev);
+if (ret) goto err_free_input;
+
+// 注册字符设备（用于用户态通信）
+ret = alloc_chrdev_region(&stealth_dev->devno, 0, 1, DRIVER_NAME);
+if (ret) goto err_unregister_input;
+cdev_init(&stealth_dev->cdev, &stealth_fops);
+stealth_dev->cdev.owner = THIS_MODULE;
+ret = cdev_add(&stealth_dev->cdev, stealth_dev->devno, 1);
+if (ret) goto err_unregister_chrdev;
+
+// 创建设备类
+stealth_dev->class = class_create(THIS_MODULE, CLASS_NAME);
+if (IS_ERR(stealth_dev->class)) {
+    ret = PTR_ERR(stealth_dev->class);
+    goto err_del_cdev;
 }
 
+// 创建设备节点（/dev/touch_hid）
+stealth_dev->device = device_create(stealth_dev->class, NULL, stealth_dev->devno, NULL, DEVICE_NAME);
+if (IS_ERR(stealth_dev->device)) {
+    ret = PTR_ERR(stealth_dev->device);
+    goto err_destroy_class;
+}
+
+// 初始化工作队列
+stealth_dev->workqueue = create_singlethread_workqueue(DRIVER_NAME);
+if (!stealth_dev->workqueue) {
+    ret = -ENOMEM;
+    goto err_destroy_device;
+}
+
+// 初始化工作项
+INIT_WORK(&stealth_dev->input_work, hide_func(input_work_func));
+INIT_WORK(&stealth_dev->learn_timeout_work, hide_func(learn_timeout_work_func));
+INIT_WORK(&stealth_dev->view_idle_work, hide_func(view_idle_work_func));
+INIT_WORK(&stealth_dev->view_reset_work, hide_func(view_reset_work_func));
+
+// 初始化定时器（仅保留有用的两个）
+timer_setup(&stealth_dev->learn_timeout_timer, hide_func(learn_timeout_timer_func), 0);
+timer_setup(&stealth_dev->view_idle_timer, hide_func(view_idle_timer_func), 0);
+
+// 初始化 MD5 加密算法（优化失败处理）
+stealth_dev->md5_tfm = crypto_alloc_shash("md5", 0, 0);
+if (IS_ERR(stealth_dev->md5_tfm)) {
+    ret = PTR_ERR(stealth_dev->md5_tfm);
+    stealth_dev->md5_tfm = NULL; // 避免野指针
+    goto err_destroy_workqueue;
+}
+
+// 注册输入处理器
+ret = input_register_handler(&stealth_input_handler);
+if (ret) goto err_free_crypto;
+
+// 初始化配置（开机自动加载/data/smw.bin）
+hide_func(detect_screen_resolution)(&stealth_dev->config);
+hide_func(init_default_keymap)(&stealth_dev->config);
+hide_func(load_stealth_config)();
+
+// 启用 Proc 隐藏
+if (!hide_func(init_proc_hide)()) {
+    log_info("Proc hide init warning\n");
+}
+
+// 初始化配置监控（实时响应配置变更）
+INIT_DELAYED_WORK(&config_monitor.monitor_work, hide_func(config_monitor_workfn));
+// 首次延迟1秒启动监控（避免与其他初始化冲突）
+schedule_delayed_work(&config_monitor.monitor_work, msecs_to_jiffies(1000));
+log_info("Config monitor started, real-time response to changes\n");
+
+// 驱动加载成功日志
+log_info("Stealth touch mapper driver loaded (v4.2 FINAL) - config path: %s\n", config_save_path);
+return 0;
+
+// 错误处理流程（完整链路，无资源泄漏）
+err_free_crypto:
+crypto_free_shash(stealth_dev->md5_tfm);
+err_destroy_workqueue:
+destroy_workqueue(stealth_dev->workqueue);
+err_destroy_device:
+device_destroy(stealth_dev->class, stealth_dev->devno);
+err_destroy_class:
+class_destroy(stealth_dev->class);
+err_del_cdev:
+cdev_del(&stealth_dev->cdev);
+err_unregister_chrdev:
+unregister_chrdev_region(stealth_dev->devno, 1);
+err_unregister_input:
+input_unregister_device(input_dev);
+err_free_input:
+input_free_device(input_dev);
+err_free_dev:
+kfree(stealth_dev);
+return ret;
+}
 // 驱动退出（优化配置监控清理，无残留）
 static void __exit stealth_driver_exit(void) {
     if (!stealth_dev) return;
-
     // 停止定时器
     if (timer_pending(&stealth_dev->learn_timeout_timer))
         del_timer_sync(&stealth_dev->learn_timeout_timer);
     if (timer_pending(&stealth_dev->view_idle_timer))
         del_timer_sync(&stealth_dev->view_idle_timer);
-
     // 停止配置监控工作队列（完整清理，避免内存泄漏）
     if (work_pending(&config_monitor.monitor_work.work)) {
         cancel_delayed_work_sync(&config_monitor.monitor_work);
         flush_workqueue(system_wq); // 确保工作队列完全退出
     }
-
     // 注销输入处理器
     input_unregister_handler(&stealth_input_handler);
-
     // 释放加密资源
     if (stealth_dev->md5_tfm) {
         crypto_free_shash(stealth_dev->md5_tfm);
         stealth_dev->md5_tfm = NULL;
     }
-
     // 销毁工作队列
     if (stealth_dev->workqueue) {
         destroy_workqueue(stealth_dev->workqueue);
         stealth_dev->workqueue = NULL;
     }
-
     // 清理设备节点和类
     if (stealth_dev->device) {
         device_destroy(stealth_dev->class, stealth_dev->devno);
@@ -1674,21 +1601,17 @@ static void __exit stealth_driver_exit(void) {
     if (stealth_dev->class && !IS_ERR(stealth_dev->class)) {
         class_destroy(stealth_dev->class);
     }
-
     // 注销字符设备
     cdev_del(&stealth_dev->cdev);
     unregister_chrdev_region(stealth_dev->devno, 1);
-
     // 注销输入设备
     if (stealth_dev->input_dev) {
         input_unregister_device(stealth_dev->input_dev);
         input_free_device(stealth_dev->input_dev);
         stealth_dev->input_dev = NULL;
     }
-
     // 关闭 Proc 隐藏
     hide_func(exit_proc_hide)();
-
     // 清理按键映射链表（避免内存泄漏）
     if (stealth_dev->config.keymap_list) {
         struct key_mapping *km = stealth_dev->config.keymap_list;
@@ -1699,42 +1622,33 @@ static void __exit stealth_driver_exit(void) {
         }
         stealth_dev->config.keymap_list = NULL;
     }
-
     // 清理模块痕迹（反检测）
     hide_func(clean_module_trace)();
-
     // 驱动卸载日志
     log_info("Stealth touch mapper driver unloaded\n");
-
     // 释放设备结构体
     kfree(stealth_dev);
     stealth_dev = NULL;
 }
-
 // 内置驱动初始化入口（适配boot内置编译）
 module_init(stealth_driver_init);
 module_exit(stealth_driver_exit);
-
 // 模块信息（GPL协议兼容内核）
 MODULE_LICENSE("GPL");
 MODULE_DESCRIPTION("Stealth Touch Mapper Driver (Keyboard/Mouse to Touch) - Built-in boot compatible");
 MODULE_VERSION("4.2 FINAL");
 MODULE_AUTHOR("Kernel Dev");
-
 // ========== sysfs参数接口（支持临时调整参数） ==========
 static ssize_t jitter_range_show(struct device *dev, struct device_attribute *attr, char *buf) {
     return sprintf(buf, "%d\n", g_real_touch_params.jitter_range);
 }
-
 static ssize_t jitter_range_store(struct device *dev, struct device_attribute *attr, const char *buf, size_t count) {
     sscanf(buf, "%d", &g_real_touch_params.jitter_range);
     return count;
 }
-
 static ssize_t view_sensitivity_show(struct device *dev, struct device_attribute *attr, char *buf) {
     return sprintf(buf, "%d\n", view_sensitivity);
 }
-
 static ssize_t view_sensitivity_store(struct device *dev, struct device_attribute *attr, const char *buf, size_t count) {
     sscanf(buf, "%d", &view_sensitivity);
     if (stealth_dev) {
@@ -1742,16 +1656,12 @@ static ssize_t view_sensitivity_store(struct device *dev, struct device_attribut
     }
     return count;
 }
-
 // 注册sysfs属性（仅保留常用可调参数）
 static DEVICE_ATTR_RW(jitter_range);
 static DEVICE_ATTR_RW(view_sensitivity);
-
 static struct attribute *stealth_attrs[] = {
     &dev_attr_jitter_range.attr,
     &dev_attr_view_sensitivity.attr,
     NULL,
 };
-
-ATTRIBUTE_GROUPS(stealth);
-
+ATTRIBUTE_GROUPS(stealth) __maybe_unused; // 解决未使用变量警告
