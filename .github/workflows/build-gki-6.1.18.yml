@@ -1,4 +1,4 @@
-name: 谷歌GKI 6.1驱动编译（修正配置文件）
+name: 谷歌GKI 6.1驱动编译（修复头文件引用）
 on:
   push:
     branches: [main]
@@ -31,16 +31,14 @@ jobs:
       - name: 获取GKI 6.1源码并准备模块环境
         run: |
           mkdir -p ~/android-kernel && cd ~/android-kernel
-          # 使用正确的分支 android14-6.1
           git clone --depth 1 --branch android14-6.1 https://android.googlesource.com/kernel/common gki-6.1
           cd gki-6.1
-          # 修正：使用谷歌官方 GKI 通用配置，不再尝试下载一加配置
           make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- gki_defconfig
           make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- modules_prepare
           echo "✅ 谷歌GKI 6.1源码准备完成，已生成模块编译环境"
 
       ###########################################################################
-      # 3. 配置驱动编译（官方Kbuild系统）
+      # 3. 配置驱动编译（修补头文件引用）
       ###########################################################################
       - name: 配置驱动编译环境
         run: |
@@ -49,6 +47,9 @@ jobs:
           fi
           mkdir -p gki-driver && cd gki-driver
           cp ../.github/cmboo.c ./
+
+          # 🔧 关键修复：将 <linux/inode.h> 替换为 <linux/fs.h>
+          sed -i 's/#include <linux\/inode.h>/#include <linux\/fs.h>/g' cmboo.c
 
           # 驱动Makefile（使用官方内核Kbuild）
           cat > Makefile << 'EOF'
@@ -74,10 +75,10 @@ jobs:
           	$(MAKE) -C $(KERNELDIR) M=$(PWD) ARCH=$(ARCH) CROSS_COMPILE=$(CROSS_COMPILE) clean
           	rm -f crypto_evt.ko
           EOF
-          echo "✅ 驱动编译配置完成，使用谷歌官方Kbuild系统"
+          echo "✅ 驱动编译配置完成，已修补头文件引用"
 
       ###########################################################################
-      # 4. 编译驱动模块（适配6.1内核）
+      # 4. 编译驱动模块
       ###########################################################################
       - name: 编译驱动（GKI 6.1官方环境）
         run: |
