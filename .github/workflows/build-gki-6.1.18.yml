@@ -1,4 +1,4 @@
-name: 谷歌GKI 6.1驱动编译（一加Pad Pro适配）
+name: 谷歌GKI 6.1驱动编译（修正配置文件）
 on:
   push:
     branches: [main]
@@ -26,7 +26,7 @@ jobs:
           sudo apt clean
 
       ###########################################################################
-      # 2. 拉取谷歌官方GKI 6.1源码（修正分支为 android14-6.1）
+      # 2. 拉取谷歌官方GKI 6.1源码
       ###########################################################################
       - name: 获取GKI 6.1源码并准备模块环境
         run: |
@@ -34,9 +34,8 @@ jobs:
           # 使用正确的分支 android14-6.1
           git clone --depth 1 --branch android14-6.1 https://android.googlesource.com/kernel/common gki-6.1
           cd gki-6.1
-          # 应用一加Pad Pro内核配置（GKI兼容）
-          wget https://raw.githubusercontent.com/oneplus-sm8550/android_kernel_oneplus_sm8550/oneplus/14.0-oss/arch/arm64/configs/oplus_defconfig -O arch/arm64/configs/oplus_defconfig
-          make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- oplus_defconfig
+          # 修正：使用谷歌官方 GKI 通用配置，不再尝试下载一加配置
+          make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- gki_defconfig
           make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- modules_prepare
           echo "✅ 谷歌GKI 6.1源码准备完成，已生成模块编译环境"
 
@@ -112,7 +111,7 @@ jobs:
       - name: 上传产物
         uses: actions/upload-artifact@v4
         with:
-          name: 谷歌GKI 6.1驱动（一加Pad Pro）
+          name: 谷歌GKI 6.1驱动（通用适配）
           path: |
             gki-driver/crypto_evt.ko
             output/load_stealth.sh
