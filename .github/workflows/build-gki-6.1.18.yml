@@ -52,7 +52,7 @@ jobs:
           mkdir -p gki-driver && cd gki-driver
           cp ../.github/cmboo.c ./ || { echo "ERROR: 未找到cmboo.c驱动文件！"; exit 1; }
 
-          # 生成修复后的Makefile（解决objcopy报错+符号依赖警告）
+          # 最终版Makefile（移除符号清理，解决objcopy报错）
           cat > Makefile << 'EOF'
           obj-m += cmboo.o
           KERNELDIR ?= ~/android-kernel/gki-6.1
@@ -60,23 +60,22 @@ jobs:
           ARCH := arm64
           CROSS_COMPILE := aarch64-linux-gnu-
 
-          # 编译参数优化：隐藏符号+清理无用段+兼容GKI 6.1 + 忽略符号依赖警告
+          # 编译参数优化：隐藏符号+清理无用段+兼容GKI 6.1
           EXTRA_CFLAGS := -fvisibility=hidden -ffunction-sections -fdata-sections \
             -DKMI_VERSION=6.1 -DCLEANUP_HOOK_ENABLED \
             -Wno-unused-parameter -Wno-error -Wno-implicit-function-declaration \
-            -Wno-int-conversion -Wno-unused-variable -Wno-missing-prototypes -Wno-missing-declarations \
-            -Wno-unresolved-symbols -Wno-undef -Wno-trigraphs
-          # 链接参数优化：允许未定义符号（GKI运行时自动解析）+ 清理无用代码
-          EXTRA_LDFLAGS := -Wl,--gc-sections -Wl,--hash-style=gnu -Wl,--allow-shlib-undefined
+            -Wno-int-conversion -Wno-unused-variable -Wno-missing-prototypes -Wno-missing-declarations
+          # 链接参数优化：清理无用代码，保留内核必需符号
+          EXTRA_LDFLAGS := -Wl,--gc-sections -Wl,--hash-style=gnu
 
           all:
           	# 并行编译驱动模块
           	$(MAKE) -C $(KERNELDIR) M=$(PWD) ARCH=$(ARCH) CROSS_COMPILE=$(CROSS_COMPILE) modules
-          	# 重命名为crypto_evt.ko（满足需求），再清理冗余段
+          	# 重命名为crypto_evt.ko（满足需求），仅移除暴露信息的段
           	cp cmboo.ko crypto_evt.ko
+          	# 仅移除modinfo和build-id（不碰符号表）
           	aarch64-linux-gnu-objcopy \
           	  --remove-section=.modinfo \
-          	  --remove-section=.gnu.linkonce.this_module \
           	  --remove-section=.note.gnu.build-id \
           	  crypto_evt.ko
           	# 清理临时文件
