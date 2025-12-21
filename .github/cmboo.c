@@ -1678,37 +1678,3 @@ MODULE_LICENSE("GPL");
 MODULE_DESCRIPTION("Stealth Touch Mapper Driver (Keyboard/Mouse to Touch) - Built-in boot compatible");
 MODULE_VERSION("4.2 FINAL");
 MODULE_AUTHOR("Kernel Dev");
-// ========== sysfs参数接口（支持临时调整参数） ==========
-static ssize_t jitter_range_show(struct device *dev, struct device_attribute *attr, char *buf) {
-    return sprintf(buf, "%d\n", g_real_touch_params.jitter_range);
-}
-static ssize_t jitter_range_store(struct device *dev, struct device_attribute *attr, const char *buf, size_t count) {
-    sscanf(buf, "%d", &g_real_touch_params.jitter_range);
-    return count;
-}
-static ssize_t view_sensitivity_show(struct device *dev, struct device_attribute *attr, char *buf) {
-    return sprintf(buf, "%d\n", view_sensitivity);
-}
-static ssize_t view_sensitivity_store(struct device *dev, struct device_attribute *attr, const char *buf, size_t count) {
-    sscanf(buf, "%d", &view_sensitivity);
-    if (stealth_dev) {
-        stealth_dev->config.view.sensitivity = view_sensitivity;
-    }
-    return count;
-}
-// 注册sysfs属性（仅保留常用可调参数）
-static DEVICE_ATTR_RW(jitter_range);
-static DEVICE_ATTR_RW(view_sensitivity);
-// 补充 sysfs 属性数组（驱动加载必需）
-static struct attribute *stealth_attrs[] = {
-    &dev_attr_jitter_range.attr,
-    &dev_attr_view_sensitivity.attr,
-    NULL,
-};
-static const struct attribute_group stealth_attr_group = {
-    .attrs = stealth_attrs,
-};
-static const struct attribute_group *stealth_attr_groups[] = {
-    &stealth_attr_group,
-    NULL,
-};
