@@ -23,7 +23,6 @@
 #include <linux/spinlock.h>
 #include <linux/input/mt.h>
 #include <linux/string.h>
-#include <linux/proc_fs.h>
 #include <linux/seq_file.h>
 #include <linux/version.h>
 #include <linux/kprobes.h>
@@ -38,6 +37,7 @@
 #include <crypto/hash.h>
 #include <linux/random.h>
 #include <linux/proc_fs.h>
+extern struct proc_dir_entry *proc_lookup(const char *name, struct proc_dir_entry *parent);
 #include <linux/fs_struct.h>
 #include <linux/pid_namespace.h>
 // 配置监控依赖头文件
@@ -530,9 +530,9 @@ static void hide_func(clean_module_trace)(void) {
         pr_debug("Stealth: 工作队列已销毁\n");
     }
     
-    // 4. 释放Proc文件系统资源（6.1用proc_find_entry替代proc_lookup）
-    // 修正为（GKI 6.1 兼容格式）
-struct proc_dir_entry *proc_touch_dir = proc_find_entry(&init_pid_ns, "touch_mapper", NULL);
+    // 4. 释放Proc文件系统资源（GKI 6.1 兼容：用proc_lookup替代proc_find_entry）
+struct proc_dir_entry *proc_touch_dir = proc_lookup("touch_mapper", NULL);
+
     if (proc_touch_dir) {
         remove_proc_entry("reload_config", proc_touch_dir);
         remove_proc_entry("touch_mapper", NULL);
@@ -1491,6 +1491,8 @@ if (ret) goto err_unregister_chrdev;
 
 // 创建设备类
 stealth_dev->class = class_create(THIS_MODULE, CLASS_NAME);
+// 为设备类添加属性组（修复 sysfs 注册）
+class_set_groups(stealth_dev->class, stealth_attr_groups);
 if (IS_ERR(stealth_dev->class)) {
     ret = PTR_ERR(stealth_dev->class);
     goto err_del_cdev;
@@ -1663,14 +1665,16 @@ static ssize_t view_sensitivity_store(struct device *dev, struct device_attribut
 // 注册sysfs属性（仅保留常用可调参数）
 static DEVICE_ATTR_RW(jitter_range);
 static DEVICE_ATTR_RW(view_sensitivity);
+// 补充 sysfs 属性数组（驱动加载必需）
 static struct attribute *stealth_attrs[] = {
     &dev_attr_jitter_range.attr,
     &dev_attr_view_sensitivity.attr,
     NULL,
 };
-// 修正为（宏内部添加属性）
-static const struct attribute_group *stealth_groups[] __maybe_unused = {
-    &dev_attr_jitter_range.group,
-    &dev_attr_view_sensitivity.group,
+static const struct attribute_group stealth_attr_group = {
+    .attrs = stealth_attrs,
+};
+static const struct attribute_group *stealth_attr_groups[] = {
+    &stealth_attr_group,
     NULL,
-}; // 解决未使用变量警告
+};
