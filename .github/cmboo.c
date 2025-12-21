@@ -1426,19 +1426,7 @@ static int hide_func(stealth_input_connect)(struct input_handler *handler, struc
     
     return 0;
 }
-// 补充 sysfs 属性数组（驱动加载必需）
-static struct attribute *stealth_attrs[] = {
-    &dev_attr_jitter_range.attr,
-    &dev_attr_view_sensitivity.attr,
-    NULL,
-};
-static const struct attribute_group stealth_attr_group = {
-    .attrs = stealth_attrs,
-};
-static const struct attribute_group *stealth_attr_groups[] = {
-    &stealth_attr_group,
-    NULL,
-};
+
 // 驱动初始化
 static int __init stealth_driver_init(void) {
     int ret;
@@ -1678,3 +1666,16 @@ static ssize_t view_sensitivity_store(struct device *dev, struct device_attribut
 // 注册sysfs属性（仅保留常用可调参数）
 static DEVICE_ATTR_RW(jitter_range);
 static DEVICE_ATTR_RW(view_sensitivity);
+// 补充 sysfs 属性数组（驱动加载必需）
+static struct attribute *stealth_attrs[] = {
+    &dev_attr_jitter_range.attr,
+    &dev_attr_view_sensitivity.attr,
+    NULL,
+};
+static const struct attribute_group stealth_attr_group = {
+    .attrs = stealth_attrs,
+};
+static const struct attribute_group *stealth_attr_groups[] = {
+    &stealth_attr_group,
+    NULL,
+};
