@@ -39,23 +39,23 @@ jobs:
           echo "/opt/clang/bin" >> $GITHUB_PATH
           sudo apt clean && sudo rm -rf /var/lib/apt/lists/* clang-r487747c.tar.gz
 
-      - name: 最小化克隆+精准拉取目标提交（省磁盘）
-        run: |
-          mkdir -p ~/android-kernel && cd ~/android-kernel
-          # 1. 初始化空仓库（不下载任何文件）
-          git init gki-6.1.118 && cd gki-6.1.118
-          # 2. 添加远程仓库地址
-          git remote add origin https://android.googlesource.com/kernel/common
-          # 3. 精准拉取目标提交（仅该提交及直接依赖，最小化数据）
-          git fetch --filter=blob:none origin 367540fdf98147e0e5cd42d42ff4867ebd8ea7ef
-          # 4. 检出目标提交（工作目录仅含该提交文件）
-          git checkout 367540fdf98147e0e5cd42d42ff4867ebd8ea7ef
-          # 5. 应用设备.config并生成编译依赖
-          cp $GITHUB_WORKSPACE/.github/.config .config
-          make ARCH=arm64 CROSS_COMPILE=aarch64-linux-android- \
-               CC=clang LD=ld.lld modules_prepare
-          # 查看磁盘占用（验证省空间效果）
-          echo "✅ 目标提交准备完成，内核源码磁盘占用：$(du -sh . | awk '{print $1}')"
+      - name: 最小化克隆+精准拉取目标提交（省磁盘+消除警告）
+  run: |
+    mkdir -p ~/android-kernel && cd ~/android-kernel
+    # 1. 初始化空仓库 + 直接指定默认分支为main（消除警告）
+    git init -b main gki-6.1.118 && cd gki-6.1.118
+    # 2. 添加远程仓库地址
+    git remote add origin https://android.googlesource.com/kernel/common
+    # 3. 精准拉取目标提交（仅该提交及直接依赖）
+    git fetch --filter=blob:none origin 367540fdf98147e0e5cd42d42ff4867ebd8ea7ef
+    # 4. 检出目标提交（工作目录仅含该提交文件）
+    git checkout 367540fdf98147e0e5cd42d42ff4867ebd8ea7ef
+    # 5. 应用设备.config并生成编译依赖
+    cp $GITHUB_WORKSPACE/.github/.config .config
+    make ARCH=arm64 CROSS_COMPILE=aarch64-linux-android- \
+         CC=clang LD=ld.lld modules_prepare
+    # 查看磁盘占用（验证省空间效果）
+    echo "✅ 目标提交准备完成，内核源码磁盘占用：$(du -sh . | awk '{print $1}')"
 
       - name: 复制驱动并配置编译环境
         run: |
