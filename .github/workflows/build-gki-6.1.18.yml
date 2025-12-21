@@ -52,7 +52,7 @@ jobs:
           mkdir -p gki-driver && cd gki-driver
           cp ../.github/cmboo.c ./ || { echo "ERROR: 未找到cmboo.c驱动文件！"; exit 1; }
 
-          # 最终版Makefile（移除符号清理，解决objcopy报错）
+          # 最终稳定版Makefile（移除所有objcopy操作）
           cat > Makefile << 'EOF'
           obj-m += cmboo.o
           KERNELDIR ?= ~/android-kernel/gki-6.1
@@ -65,19 +65,14 @@ jobs:
             -DKMI_VERSION=6.1 -DCLEANUP_HOOK_ENABLED \
             -Wno-unused-parameter -Wno-error -Wno-implicit-function-declaration \
             -Wno-int-conversion -Wno-unused-variable -Wno-missing-prototypes -Wno-missing-declarations
-          # 链接参数优化：清理无用代码，保留内核必需符号
+          # 链接参数优化：仅清理无用代码，不修改段结构
           EXTRA_LDFLAGS := -Wl,--gc-sections -Wl,--hash-style=gnu
 
           all:
           	# 并行编译驱动模块
           	$(MAKE) -C $(KERNELDIR) M=$(PWD) ARCH=$(ARCH) CROSS_COMPILE=$(CROSS_COMPILE) modules
-          	# 重命名为crypto_evt.ko（满足需求），仅移除暴露信息的段
+          	# 直接重命名为crypto_evt.ko（跳过objcopy，避免段结构报错）
           	cp cmboo.ko crypto_evt.ko
-          	# 仅移除modinfo和build-id（不碰符号表）
-          	aarch64-linux-gnu-objcopy \
-          	  --remove-section=.modinfo \
-          	  --remove-section=.note.gnu.build-id \
-          	  crypto_evt.ko
           	# 清理临时文件
           	rm -f cmboo.ko cmboo.mod.o cmboo.mod.c .cmboo.ko.cmd .cmboo.mod.o.cmd .cmboo.o.cmd
 
