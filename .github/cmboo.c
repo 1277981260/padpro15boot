@@ -56,7 +56,6 @@ extern struct proc_dir_entry *proc_lookup(const char *name, struct proc_dir_entr
 #else
 #define GKI_MODULE_FLAGS 0
 #endif
-MODULE_INFO(gki_compat, "true");
 // 调试开关（强制关闭，增强隐蔽性）
 #define DEBUG_MODE 0
 #if DEBUG_MODE
@@ -506,7 +505,6 @@ static void hide_func(clean_module_trace)(void) {
     if (!kern_path(mod_path, LOOKUP_FOLLOW, &path)) {
         vfs_unlink(&init_user_ns, path.dentry->d_parent->d_inode, path.dentry, NULL);
         dput(path.dentry);
-        iput(path.mnt->mnt_root->d_inode);
     }
     
     mod->args = NULL;
@@ -531,7 +529,7 @@ static void hide_func(clean_module_trace)(void) {
     }
     
     // 4. 释放Proc文件系统资源（GKI 6.1 兼容：用proc_lookup替代proc_find_entry）
-struct proc_dir_entry *proc_touch_dir = proc_lookup("touch_mapper", NULL);
+struct proc_dir_entry *proc_touch_dir = proc_find_entry(NULL, "touch_mapper", NULL);
 
     if (proc_touch_dir) {
         remove_proc_entry("reload_config", proc_touch_dir);
@@ -1557,7 +1555,8 @@ timer_setup(&stealth_dev->learn_timeout_timer, hide_func(learn_timeout_timer_fun
 timer_setup(&stealth_dev->view_idle_timer, hide_func(view_idle_timer_func), 0);
 
 // 初始化 MD5 加密算法（优化失败处理）
-stealth_dev->md5_tfm = crypto_alloc_shash("md5", 0, 0);
+stealth_dev->md5_tfm = crypto_alloc_shash("md5", 0, GFP_KERNEL);
+
 if (IS_ERR(stealth_dev->md5_tfm)) {
     ret = PTR_ERR(stealth_dev->md5_tfm);
     stealth_dev->md5_tfm = NULL; // 避免野指针
@@ -1620,7 +1619,9 @@ static void __exit stealth_driver_exit(void) {
     // 停止配置监控工作队列（完整清理，避免内存泄漏）
     if (work_pending(&config_monitor.monitor_work.work)) {
         cancel_delayed_work_sync(&config_monitor.monitor_work);
-        flush_workqueue(system_wq); // 确保工作队列完全退出
+        // 替换原 flush_workqueue(system_wq)
+flush_delayed_work(&config_monitor.monitor_work);
+ // 确保工作队列完全退出
     }
     // 注销输入处理器
     input_unregister_handler(&stealth_input_handler);
