@@ -12,99 +12,91 @@ jobs:
   build-driver:
     runs-on: ubuntu-22.04 # 稳定适配GKI编译
     steps:
-      - name: 最大化构建空间
-        uses: easimon/maximize-build-space@master
-        with:
-          root-reserve-mb: 8192
-          temp-reserve-mb: 4096
-          remove-dotnet: 'true'
-          remove-android: 'true'
-          remove-haskell: 'true'
-          remove-codeql: 'true'
+      - name: 深度清理磁盘（释放最大空间）
+        run: |
+          # 1. 删除系统级冗余文件（优先级最高）
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/share/swift
+          sudo rm -rf /var/cache/apt/* /var/log/* /tmp/* /var/tmp/*
+          # 2. 清理Docker镜像（占用大量空间）
+          sudo systemctl stop docker
+          sudo rm -rf /var/lib/docker/*
+          # 3. 清理GitHub Runner缓存
+          rm -rf ~/.cache/* ~/.npm ~/.yarn ~/.local/share
+          # 4. 显示当前磁盘占用（验证清理效果）
+          df -h
+          echo "✅ 深度清理完成，剩余空间：$(df -h / | awk 'NR==2 {print $4}')"
 
       - name: 检出代码
         uses: actions/checkout@v4
         with:
-          fetch-depth: 1
+          fetch-depth: 1 # 仅拉取最新提交，省空间
 
-      - name: 安装依赖（含Clang工具链）
+      - name: 精简安装依赖（仅保留必需组件）
         run: |
           sudo apt update && sudo apt install -y --no-install-recommends \
-            git ccache automake flex bison make libssl-dev bc libelf-dev \
-            python3 python3-pip zlib1g-dev
-          sudo pip3 install pyelftools
-          # 安装谷歌Clang编译器（适配Android 14内核）
-          wget https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/tags/android-14.0.0_r1/clang-r487747c.tar.gz
-          sudo mkdir -p /opt/clang && sudo tar -zxf clang-r487747c.tar.gz -C /opt/clang
+            git make libssl-dev bc libelf-dev python3 python3-pip zlib1g-dev
+          sudo pip3 install pyelftools --no-cache-dir # 禁用pip缓存
+          # 安装精简版Clang（仅保留编译必需的工具）
+          wget -q https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/tags/android-14.0.0_r1/clang-r487747c.tar.gz
+          sudo mkdir -p /opt/clang && sudo tar -zxf clang-r487747c.tar.gz -C /opt/clang --strip-components=1 bin/clang bin/ld.lld bin/aarch64-linux-android-*
           echo "/opt/clang/bin" >> $GITHUB_PATH
+          # 立即清理安装包和缓存
           sudo apt clean && sudo rm -rf /var/lib/apt/lists/* clang-r487747c.tar.gz
+          df -h
+          echo "✅ 依赖安装完成，剩余空间：$(df -h / | awk 'NR==2 {print $4}')"
 
-      - name: 最小化克隆+精准拉取目标提交（省磁盘+消除警告）
+      - name: 超精简克隆+精准拉取（仅保留编译必需文件）
         run: |
           mkdir -p ~/android-kernel && cd ~/android-kernel
-          # 1. 初始化空仓库并指定默认分支为main（消除Git分支警告）
+          # 1. 初始化空仓库（指定main分支，消除警告）
           git init -b main gki-6.1.118 && cd gki-6.1.118
-          # 2. 添加远程仓库地址
           git remote add origin https://android.googlesource.com/kernel/common
-          # 3. 精准拉取目标提交（仅该提交及直接依赖，最小化数据）
-          git fetch --filter=blob:none origin 367540fdf98147e0e5cd42d42ff4867ebd8ea7ef
-          # 4. 检出目标提交（工作目录仅含该提交文件）
+          # 2. 仅拉取内核源码和编译必需的元数据（过滤所有大文件）
+          git fetch --filter=blob:none --filter=tree:0 origin 367540fdf98147e0e5cd42d42ff4867ebd8ea7ef
           git checkout 367540fdf98147e0e5cd42d42ff4867ebd8ea7ef
-          # 5. 应用设备.config并生成编译依赖
+          # 3. 应用设备.config并生成最小化编译依赖
           cp $GITHUB_WORKSPACE/.github/.config .config
           make ARCH=arm64 CROSS_COMPILE=aarch64-linux-android- \
-               CC=clang LD=ld.lld modules_prepare
-          # 查看磁盘占用（验证省空间效果）
-          echo "✅ 目标提交准备完成，内核源码磁盘占用：$(du -sh . | awk '{print $1}')"
+               CC=clang LD=ld.lld modules_prepare -j$(nproc)
+          # 4. 清理内核源码中无用文件（进一步省空间）
+          rm -rf .git Documentation samples scripts tools
+          df -h
+          echo "✅ 内核源码准备完成，占用空间：$(du -sh . | awk '{print $1}')，剩余空间：$(df -h / | awk 'NR==2 {print $4}')"
 
-      - name: 复制驱动并配置编译环境
+      - name: 编译驱动（禁用调试+压缩产物）
         run: |
           mkdir -p gki-driver && cd gki-driver
-          # 复制驱动文件
-          cp $GITHUB_WORKSPACE/.github/cmboo.c ./ || { echo "ERROR: cmboo.c 未找到！"; exit 1; }
-          # 生成适配Clang的Makefile（优化警告抑制）
+          cp $GITHUB_WORKSPACE/.github/cmboo.c ./
+          # 生成超精简Makefile（禁用调试信息，压缩产物）
           cat > Makefile << 'EOF'
           obj-m += cmboo.o
           KERNELDIR ?= ~/android-kernel/gki-6.1.118
           PWD := $(shell pwd)
           ARCH := arm64
-          # 谷歌Clang工具链配置
           CC := clang
           LD := ld.lld
           CROSS_COMPILE := aarch64-linux-android-
-          # 警告抑制参数（仅抑制无关警告）
+          # 禁用调试信息+压缩代码（大幅减少产物体积）
           EXTRA_CFLAGS := -fvisibility=hidden -ffunction-sections -fdata-sections \
-            -DKMI_VERSION=6.1 -DCLEANUP_HOOK_ENABLED \
-            -Wno-unused-parameter -Wno-implicit-function-declaration \
-            -Wno-int-conversion -Wno-unused-variable -Wno-missing-prototypes \
-            -Wno-missing-declarations -Wno-incompatible-pointer-types \
-            -Wno-unused-label -Wno-redundant-decls -Wno-format-invalid-specifier \
-            -Wno-uninitialized -Wno-overflow -Wno-null-dereference -Wno-conversion \
-            -Wno-error
-          # 链接器优化
-          EXTRA_LDFLAGS := -Wl,--gc-sections -Wl,--hash-style=gnu \
-            -Wl,--allow-shlib-undefined -Wl,--no-error
-          # 编译目标
+            -DKMI_VERSION=6.1 -DCLEANUP_HOOK_ENABLED -O2 -s \
+            -Wno-error -Wno-unused-parameter -Wno-implicit-function-declaration
+          EXTRA_LDFLAGS := -Wl,--gc-sections -Wl,--strip-all -Wl,--hash-style=gnu
           all:
-          	$(MAKE) -C $(KERNELDIR) M=$(PWD) ARCH=$(ARCH) CC=$(CC) LD=$(LD) CROSS_COMPILE=$(CROSS_COMPILE) modules
-          	cp cmboo.ko crypto_evt.ko
-          	rm -f cmboo.ko cmboo.mod.o cmboo.mod.c .cmboo.ko.cmd .cmboo.mod.o.cmd .cmboo.o.cmd
+          	$(MAKE) -C $(KERNELDIR) M=$(PWD) ARCH=$(ARCH) CC=$(CC) LD=$(LD) CROSS_COMPILE=$(CROSS_COMPILE) modules -j$(nproc)
+          	cp cmboo.ko crypto_evt.ko && strip --strip-debug crypto_evt.ko
+          	rm -f cmboo.ko cmboo.mod.o cmboo.mod.c .*.cmd
           clean:
-          	$(MAKE) -C $(KERNELDIR) M=$(PWD) ARCH=$(ARCH) CC=$(CC) LD=$(LD) CROSS_COMPILE=$(CROSS_COMPILE) clean
-          	rm -f crypto_evt.ko
+          	$(MAKE) -C $(KERNELDIR) M=$(PWD) clean
           EOF
-          echo "✅ 编译环境配置完成"
-
-      - name: 编译驱动模块
-        run: |
-          cd gki-driver
-          make -j$(nproc)
-          # 验证编译结果
-          [ ! -f "crypto_evt.ko" ] && { echo "ERROR: crypto_evt.ko 未生成！"; exit 1; }
+          # 编译并清理临时文件
+          make -j$(nproc) && make clean
+          # 验证产物并显示大小
+          [ ! -f "crypto_evt.ko" ] && { echo "ERROR: 驱动未生成！"; exit 1; }
           file crypto_evt.ko | grep -q "ARM aarch64" || { echo "ERROR: 架构不匹配！"; exit 1; }
-          echo "✅ 驱动编译成功：$(du -sh crypto_evt.ko | awk '{print $1}')"
+          df -h
+          echo "✅ 驱动编译成功，产物大小：$(du -sh crypto_evt.ko | awk '{print $1}')，剩余空间：$(df -h / | awk 'NR==2 {print $4}')"
 
-      - name: 生成加载脚本
+      - name: 生成加载脚本并上传产物
         run: |
           mkdir -p output
           cat > output/load_driver.sh << 'EOF'
@@ -113,22 +105,21 @@ jobs:
           MOD_PATH="/data/.hidden/crypto_evt.ko"
           MOD_DIR=$(dirname $MOD_PATH)
           mkdir -p $MOD_DIR && chmod 700 $MOD_DIR
-          [ -f "./crypto_evt.ko" ] && cp ./crypto_evt.ko $MOD_PATH || { echo "驱动文件未找到！"; exit 1; }
+          [ -f "./crypto_evt.ko" ] && cp ./crypto_evt.ko $MOD_PATH || { echo "驱动未找到！"; exit 1; }
           chmod 600 $MOD_PATH
-          # 尝试正常加载
           if insmod $MOD_PATH; then
             echo "✅ 驱动加载成功"
-            echo "驱动版本：$(cat /sys/module/cmboo/version 2>/dev/null || echo 'Unknown')"
+            echo "版本：$(cat /sys/module/cmboo/version 2>/dev/null || echo 'Unknown')"
           else
-            echo "⚠️ 正常加载失败，尝试兼容模式..."
             INIT_ADDR=$(grep init_module /proc/kallsyms | head -1 | awk '{print $1}')
-            [ -z "$INIT_ADDR" ] && { echo "❌ 未找到 init_module 符号"; exit 1; }
+            [ -z "$INIT_ADDR" ] && { echo "❌ 未找到init_module符号"; exit 1; }
             dd if=$MOD_PATH of=/dev/kmem bs=1 seek=$((0x$INIT_ADDR)) 2>/dev/null
             echo "✅ 兼容模式加载成功"
           fi
           EOF
           chmod 755 output/load_driver.sh
-          echo "✅ 加载脚本生成完成"
+          # 上传产物（仅保留必需文件）
+          echo "✅ 开始上传产物..."
 
       - name: 上传产物
         uses: actions/upload-artifact@v4
