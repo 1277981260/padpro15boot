@@ -25,11 +25,11 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 1
-      - name: 安装完整依赖（补全objdump/objcopy）
+      - name: 安装完整依赖（补全交叉编译工具）
         run: |
           sudo apt update && sudo apt install -y --no-install-recommends \
             git make libssl-dev bc libelf-dev python3 python3-pip zlib1g-dev bison flex \
-            gcc-multilib g++-multilib rsync binutils-aarch64-linux-gnu # binutils包含所有交叉编译工具
+            gcc-multilib g++-multilib rsync binutils-aarch64-linux-gnu
           sudo pip3 install pyelftools --no-cache-dir
           sudo apt remove -y clang llvm lld || true
           sudo apt autoremove -y && sudo apt clean
@@ -37,22 +37,18 @@ jobs:
           wget -q https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/tags/android-14.0.0_r1/clang-r487747c.tar.gz
           sudo mkdir -p /opt/clang
           sudo tar -zxf clang-r487747c.tar.gz -C /opt/clang
-          # 关键：创建所有必需工具的软链接（nm/objdump/objcopy）
+          # 创建必需软链接
           sudo ln -s /usr/bin/aarch64-linux-gnu-nm /opt/clang/bin/aarch64-linux-android-nm
           sudo ln -s /usr/bin/aarch64-linux-gnu-objdump /opt/clang/bin/aarch64-linux-android-objdump
           sudo ln -s /usr/bin/aarch64-linux-gnu-objcopy /opt/clang/bin/aarch64-linux-android-objcopy
+          sudo ln -s /usr/bin/aarch64-linux-gnu-strip /opt/clang/bin/aarch64-linux-android-strip
           sudo ln -s /opt/clang/bin/clang /opt/clang/bin/aarch64-linux-android-clang
           sudo ln -s /opt/clang/bin/ld.lld /opt/clang/bin/aarch64-linux-android-ld.lld
-          # 验证所有工具完整性
-          /opt/clang/bin/clang --version || { echo "❌ Clang安装失败"; exit 1; }
-          /opt/clang/bin/ld.lld --version || { echo "❌ ld.lld安装失败"; exit 1; }
-          /opt/clang/bin/aarch64-linux-android-nm --version || { echo "❌ nm工具安装失败"; exit 1; }
-          /opt/clang/bin/aarch64-linux-android-objdump --version || { echo "❌ objdump工具安装失败"; exit 1; }
-          /opt/clang/bin/aarch64-linux-android-objcopy --version || { echo "❌ objcopy工具安装失败"; exit 1; }
-          # 清理安装包
+          # 验证工具
+          /opt/clang/bin/aarch64-linux-android-strip --version || { echo "❌ strip工具安装失败"; exit 1; }
           rm -rf clang-r487747c.tar.gz
-          echo "✅ 依赖安装完成（所有工具补全）"
-      - name: 适配空间的深度克隆（depth=150）+ 创建KMI白名单
+          echo "✅ 依赖安装完成"
+      - name: 深度克隆内核源码+创建KMI白名单
         run: |
           mkdir -p ~/android-kernel && cd ~/android-kernel
           git clone --branch android14-6.1 --single-branch --depth 150 https://android.googlesource.com/kernel/common gki-6.1.118
@@ -60,46 +56,46 @@ jobs:
           git fetch origin 367540fdf98147e0e5cd42d42ff4867ebd8ea7ef
           git checkout 367540fdf98147e0e5cd42d42ff4867ebd8ea7ef
           cp $GITHUB_WORKSPACE/.github/.config .config
-          # 创建KMI白名单文件
+          # 创建KMI白名单
           WHITELIST_PATH="/work/0007/workspace/Build_S_Vendor/40651/code/source/vnd/kernel_platform/out/bazel/output_user_root/6189f777e865a9c6daeefd728038884f/execroot/__main__/bazel-out/k8-fastbuild/bin/common/kernel_aarch64_raw_kmi_symbol_list/"
           sudo mkdir -p $WHITELIST_PATH
           sudo touch $WHITELIST_PATH/abi_symbollist.raw
           sudo chmod 644 $WHITELIST_PATH/abi_symbollist.raw
-          # 编译依赖（单线程+详细日志）
+          # 编译依赖
           make ARCH=arm64 CROSS_COMPILE=/opt/clang/bin/aarch64-linux-android- \
                CC=/opt/clang/bin/clang LD=/opt/clang/bin/ld.lld modules_prepare -j1 V=1
-          # 清理.git释放空间
+          # 保留符号表
+          cp Module.symvers ~/android-kernel/
           rm -rf .git Documentation samples
-          SRC_SIZE=$(du -sh . | awk '{print $1}')
-          echo "✅ 内核源码准备完成，占用空间：$SRC_SIZE"
-      - name: 编译驱动（完整工具链）
+          echo "✅ 内核源码准备完成"
+      - name: 编译驱动（硬编码strip路径）
         run: |
           mkdir -p gki-driver && cd gki-driver
           cp $GITHUB_WORKSPACE/.github/cmboo.c ./
+          cp ~/android-kernel/Module.symvers ./
+          # 直接用绝对路径调用交叉编译strip，不依赖变量
           cat > Makefile << 'EOF'
           obj-m += cmboo.o
           KERNELDIR ?= ~/android-kernel/gki-6.1.118
           PWD := $(shell pwd)
           ARCH := arm64
-          # 显式指定所有工具路径
           CC := /opt/clang/bin/clang
           LD := /opt/clang/bin/ld.lld
-          NM := /opt/clang/bin/aarch64-linux-android-nm
-          OBJDUMP := /opt/clang/bin/aarch64-linux-android-objdump
-          OBJCOPY := /opt/clang/bin/aarch64-linux-android-objcopy
           CROSS_COMPILE := /opt/clang/bin/aarch64-linux-android-
           EXTRA_CFLAGS := -fvisibility=hidden -ffunction-sections -fdata-sections \
             -DKMI_VERSION=6.1 -DCLEANUP_HOOK_ENABLED -O2 -s \
             -Wno-error -Wno-unused-parameter -Wno-implicit-function-declaration
           EXTRA_LDFLAGS := -Wl,--gc-sections -Wl,--strip-all -Wl,--hash-style=gnu
           all:
-          	$(MAKE) -C $(KERNELDIR) M=$(PWD) ARCH=$(ARCH) CC=$(CC) LD=$(LD) NM=$(NM) OBJDUMP=$(OBJDUMP) OBJCOPY=$(OBJCOPY) CROSS_COMPILE=$(CROSS_COMPILE) modules -j$(nproc) V=1
-          	cp cmboo.ko crypto_evt.ko && strip --strip-debug crypto_evt.ko
+          	$(MAKE) -C $(KERNELDIR) M=$(PWD) ARCH=$(ARCH) CC=$(CC) LD=$(LD) CROSS_COMPILE=$(CROSS_COMPILE) modules -j$(nproc) V=1
+          	cp cmboo.ko crypto_evt.ko
+          	# 硬编码strip路径，避免调用系统默认
+          	/opt/clang/bin/aarch64-linux-android-strip --strip-debug crypto_evt.ko
           	rm -f cmboo.ko cmboo.mod.o cmboo.mod.c .*.cmd
           clean:
           	$(MAKE) -C $(KERNELDIR) M=$(PWD) clean
           EOF
-          # 编译驱动
+          # 编译
           if ! make -j$(nproc) V=1; then
             echo "❌ 驱动编译失败，查看详细日志"
             exit 1
