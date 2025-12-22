@@ -64,10 +64,10 @@ jobs:
 
       - name: 编译驱动（强制执行+产物校验）
         run: |
-          # 创建驱动目录并复制源码（用相对路径）
-          mkdir -p gki-driver
-          cp .github/cmboo.c gki-driver/
-          cd gki-driver
+          # 创建驱动目录并复制源码
+          mkdir -p $GITHUB_WORKSPACE/gki-driver
+          cp $GITHUB_WORKSPACE/.github/cmboo.c $GITHUB_WORKSPACE/gki-driver/
+          cd $GITHUB_WORKSPACE/gki-driver
           # 编写Makefile（Tab开头修复）
           cat > Makefile << 'EOF'
           obj-m += cmboo.o
@@ -98,15 +98,13 @@ jobs:
           [ ! -f "crypto_evt.ko" ] && { echo "❌ crypto_evt.ko未生成"; exit 1; }
           file crypto_evt.ko | grep -q "ARM aarch64" || { echo "❌ 架构不匹配"; exit 1; }
           echo "✅ 驱动编译成功：$(du -sh crypto_evt.ko | awk '{print $1}')"
-          # 打印当前目录和文件列表（确认产物存在）
+          # 调试命令（单行格式）
           pwd && ls -la
-          # 回到工作根目录
-          cd ..
 
-      - name: 生成加载脚本（相对路径）
+      - name: 生成加载脚本
         run: |
-          mkdir -p output
-          cat > output/load_driver.sh << 'EOF'
+          mkdir -p $GITHUB_WORKSPACE/output
+          cat > $GITHUB_WORKSPACE/output/load_driver.sh << 'EOF'
           #!/system/bin/sh
           set -euo pipefail
           MOD_PATH="/data/.hidden/crypto_evt.ko"
@@ -124,16 +122,16 @@ jobs:
             echo "✅ 兼容模式加载成功"
           fi
           EOF
-          chmod 755 output/load_driver.sh
-          # 打印output目录文件（确认脚本存在）
-          ls -lala output
+          chmod 755 $GITHUB_WORKSPACE/output/load_driver.sh
+          # 调试命令（单行格式）
+          ls -la $GITHUB_WORKSPACE/output
 
-      - name: 上传产物（相对路径，必成功！）
+      - name: 上传产物（最终修复路径）
         uses: actions/upload-artifact@v4
         with:
           name: 6.1.118-Clang-Driver-OnePlusPadPro
-          path:
-            gki-driver/crypto_evt.ko  # 相对路径：工作目录下的gki-driver
-            output/load_driver.sh      # 相对路径：工作目录下的output
+          path: |
+            gki-driver/crypto_evt.ko
+            output/load_driver.sh
           retention-days: 30
           if-no-files-found: error
