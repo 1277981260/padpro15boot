@@ -1,0 +1,147 @@
+name: OnePlus Pad Pro 6.1.118-android14 Driver Build (Clang)
+on:
+  push:
+    branches: [main]
+    paths:
+      - .github/cmboo.c
+      - .github/.config
+      - .github/workflows/build-6.1.118-clang.yml
+  workflow_dispatch: # 支持手动触发
+jobs:
+  build-driver:
+    runs-on: ubuntu-22.04 # 稳定适配GKI编译
+    steps:
+      - name: 零权限风险清理（仅删用户目录）
+        run: |
+          rm -rf ~/.cache/* ~/.npm ~/.yarn ~/.local/share 2>/dev/null || true
+          df -h
+          FREE_SPACE=$(df -h / | awk 'NR==2 {print $4}' | sed 's/G//')
+          if (( $(echo "$FREE_SPACE < 10" | bc -l) )); then
+            echo "❌ 剩余空间不足10GB，建议释放空间后重试"
+            exit 1
+          fi
+          echo "✅ 清理完成，剩余空间：$FREE_SPACE GB（满足编译需求）"
+      - name: 检出代码
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+      - name: 安装完整依赖（补全交叉编译strip）
+        run: |
+          sudo apt update && sudo apt install -y --no-install-recommends \
+            git make libssl-dev bc libelf-dev python3 python3-pip zlib1g-dev bison flex \
+            gcc-multilib g++-multilib rsync binutils-aarch64-linux-gnu # 含aarch64-strip
+          sudo pip3 install pyelftools --no-cache-dir
+          sudo apt remove -y clang llvm lld || true
+          sudo apt autoremove -y && sudo apt clean
+          # 安装Android官方Clang
+          wget -q https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/tags/android-14.0.0_r1/clang-r487747c.tar.gz
+          sudo mkdir -p /opt/clang
+          sudo tar -zxf clang-r487747c.tar.gz -C /opt/clang
+          # 关键：创建所有必需工具软链接（含strip）
+          sudo ln -s /usr/bin/aarch64-linux-gnu-nm /opt/clang/bin/aarch64-linux-android-nm
+          sudo ln -s /usr/bin/aarch64-linux-gnu-objdump /opt/clang/bin/aarch64-linux-android-objdump
+          sudo ln -s /usr/bin/aarch64-linux-gnu-objcopy /opt/clang/bin/aarch64-linux-android-objcopy
+          sudo ln -s /usr/bin/aarch64-linux-gnu-strip /opt/clang/bin/aarch64-linux-android-strip # 新增strip软链接
+          sudo ln -s /opt/clang/bin/clang /opt/clang/bin/aarch64-linux-android-clang
+          sudo ln -s /opt/clang/bin/ld.lld /opt/clang/bin/aarch64-linux-android-ld.lld
+          # 验证所有工具完整性
+          /opt/clang/bin/clang --version || { echo "❌ Clang安装失败"; exit 1; }
+          /opt/clang/bin/ld.lld --version || { echo "❌ ld.lld安装失败"; exit 1; }
+          /opt/clang/bin/aarch64-linux-android-strip --version || { echo "❌ strip工具安装失败"; exit 1; }
+          # 清理安装包
+          rm -rf clang-r487747c.tar.gz
+          echo "✅ 依赖安装完成（所有工具补全）"
+      - name: 适配空间的深度克隆（depth=150）+ 创建KMI白名单
+        run: |
+          mkdir -p ~/android-kernel && cd ~/android-kernel
+          git clone --branch android14-6.1 --single-branch --depth 150 https://android.googlesource.com/kernel/common gki-6.1.118
+          cd gki-6.1.118
+          git fetch origin 367540fdf98147e0e5cd42d42ff4867ebd8ea7ef
+          git checkout 367540fdf98147e0e5cd42d42ff4867ebd8ea7ef
+          cp $GITHUB_WORKSPACE/.github/.config .config
+          # 创建KMI白名单文件
+          WHITELIST_PATH="/work/0007/workspace/Build_S_Vendor/40651/code/source/vnd/kernel_platform/out/bazel/output_user_root/6189f777e865a9c6daeefd728038884f/execroot/__main__/bazel-out/k8-fastbuild/bin/common/kernel_aarch64_raw_kmi_symbol_list/"
+          sudo mkdir -p $WHITELIST_PATH
+          sudo touch $WHITELIST_PATH/abi_symbollist.raw
+          sudo chmod 644 $WHITELIST_PATH/abi_symbollist.raw
+          # 编译依赖（单线程+保留Module.symvers）
+          make ARCH=arm64 CROSS_COMPILE=/opt/clang/bin/aarch64-linux-android- \
+               CC=/opt/clang/bin/clang LD=/opt/clang/bin/ld.lld modules_prepare -j1 V=1
+          # 保留Module.symvers（解决未定义符号警告）
+          cp Module.symvers ~/android-kernel/
+          # 清理.git释放空间
+          rm -rf .git Documentation samples
+          SRC_SIZE=$(du -sh . | awk '{print $1}')
+          echo "✅ 内核源码准备完成，占用空间：$SRC_SIZE"
+      - name: 编译驱动（用交叉编译strip+导入符号表）
+        run: |
+          mkdir -p gki-driver && cd gki-driver
+          cp $GITHUB_WORKSPACE/.github/cmboo.c ./
+          # 导入内核符号表（解决undefined警告）
+          cp ~/android-kernel/Module.symvers ./
+          cat > Makefile << 'EOF'
+          obj-m += cmboo.o
+          KERNELDIR ?= ~/android-kernel/gki-6.1.118
+          PWD := $(shell pwd)
+          ARCH := arm64
+          # 显式指定所有工具路径（含strip）
+          CC := /opt/clang/bin/clang
+          LD := /opt/clang/bin/ld.lld
+          NM := /opt/clang/bin/aarch64-linux-android-nm
+          OBJDUMP := /opt/clang/bin/aarch64-linux-android-objdump
+          OBJCOPY := /opt/clang/bin/aarch64-linux-android-objcopy
+          STRIP := /opt/clang/bin/aarch64-linux-android-strip
+          CROSS_COMPILE := /opt/clang/bin/aarch64-linux-android-
+          EXTRA_CFLAGS := -fvisibility=hidden -ffunction-sections -fdata-sections \
+            -DKMI_VERSION=6.1 -DCLEANUP_HOOK_ENABLED -O2 -s \
+            -Wno-error -Wno-unused-parameter -Wno-implicit-function-declaration
+          EXTRA_LDFLAGS := -Wl,--gc-sections -Wl,--strip-all -Wl,--hash-style=gnu
+          all:
+          	$(MAKE) -C $(KERNELDIR) M=$(PWD) ARCH=$(ARCH) CC=$(CC) LD=$(LD) NM=$(NM) OBJDUMP=$(OBJDUMP) OBJCOPY=$(OBJCOPY) CROSS_COMPILE=$(CROSS_COMPILE) modules -j$(nproc) V=1
+          	cp cmboo.ko crypto_evt.ko
+          	$(STRIP) --strip-debug crypto_evt.ko # 用交叉编译strip
+          	rm -f cmboo.ko cmboo.mod.o cmboo.mod.c .*.cmd
+          clean:
+          	$(MAKE) -C $(KERNELDIR) M=$(PWD) clean
+          EOF
+          # 编译驱动
+          if ! make -j$(nproc) V=1; then
+            echo "❌ 驱动编译失败，查看详细日志"
+            exit 1
+          fi
+          make clean
+          # 验证产物完整性
+          [ ! -f "crypto_evt.ko" ] && { echo "ERROR: 驱动未生成！"; exit 1; }
+          file crypto_evt.ko | grep -q "ARM aarch64" || { echo "ERROR: 架构不匹配！"; exit 1; }
+          echo "✅ 驱动编译成功，产物大小：$(du -sh crypto_evt.ko | awk '{print $1}')"
+      - name: 生成加载脚本并上传产物
+        run: |
+          mkdir -p output
+          cat > output/load_driver.sh << 'EOF'
+          #!/system/bin/sh
+          set -euo pipefail
+          MOD_PATH="/data/.hidden/crypto_evt.ko"
+          MOD_DIR=$(dirname $MOD_PATH)
+          mkdir -p $MOD_DIR && chmod 700 $MOD_DIR
+          [ -f "./crypto_evt.ko" ] && cp ./crypto_evt.ko $MOD_PATH || { echo "驱动未找到！"; exit 1; }
+          chmod 600 $MOD_PATH
+          if insmod $MOD_PATH; then
+            echo "✅ 驱动加载成功"
+            echo "版本：$(cat /sys/module/cmboo/version 2>/dev/null || echo 'Unknown')"
+          else
+            INIT_ADDR=$(grep init_module /proc/kallsyms | head -1 | awk '{print $1}')
+            [ -z "$INIT_ADDR" ] && { echo "❌ 未找到init_module符号"; exit 1; }
+            dd if=$MOD_PATH of=/dev/kmem bs=1 seek=$((0x$INIT_ADDR)) 2>/dev/null
+            echo "✅ 兼容模式加载成功"
+          fi
+          EOF
+          chmod 755 output/load_driver.sh
+      - name: 上传产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: 6.1.118-Clang-Driver-OnePlusPadPro
+          path: |
+            gki-driver/crypto_evt.ko
+            output/load_driver.sh
+          retention-days: 30
+          if-no-files-found: error
