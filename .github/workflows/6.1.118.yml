@@ -115,7 +115,9 @@ jobs:
           echo "✅ 驱动编译成功，产物大小：$(du -sh crypto_evt.ko | awk '{print $1}')"
           # 最后清理中间文件（不影响产物）
           make clean
-      - name: 生成加载脚本并上传产物（保留已验证逻辑）
+          # 复制产物到输出目录，避免路径识别问题
+          cp crypto_evt.ko ../output/
+      - name: 生成加载脚本
         run: |
           mkdir -p output
           cat > output/load_driver.sh << 'EOF'
@@ -137,12 +139,12 @@ jobs:
           fi
           EOF
           chmod 755 output/load_driver.sh
-      - name: 上传产物（保留已验证配置）
+      - name: 上传产物（修复路径格式）
         uses: actions/upload-artifact@v4
         with:
           name: 6.1.118-Clang-Driver-OnePlusPadPro
           path: |
-            gki-driver/crypto_evt.ko
+            output/crypto_evt.ko
             output/load_driver.sh
           retention-days: 30
           if-no-files-found: error
