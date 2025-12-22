@@ -7,7 +7,6 @@ on:
       - .github/.config
       - .github/workflows/build-6.1.118-clang.yml
   workflow_dispatch: # 支持手动触发
-
 jobs:
   build-driver:
     runs-on: ubuntu-22.04 # 稳定适配GKI编译
@@ -25,31 +24,32 @@ jobs:
           # 4. 显示当前磁盘占用（验证清理效果）
           df -h
           echo "✅ 深度清理完成，剩余空间：$(df -h / | awk 'NR==2 {print $4}')"
-
       - name: 检出代码
         uses: actions/checkout@v4
         with:
           fetch-depth: 1 # 仅拉取最新提交，省空间
-
-      - name: 精简安装依赖（仅保留必需组件）
+      - name: 精简安装依赖（修复ld.lld缺失）
         run: |
           sudo apt update && sudo apt install -y --no-install-recommends \
-            git make libssl-dev bc libelf-dev python3 python3-pip zlib1g-dev
+            git make libssl-dev bc libelf-dev python3 python3-pip zlib1g-dev bison flex
           sudo pip3 install pyelftools --no-cache-dir # 禁用pip缓存
-          # 安装Clang（修复通配符问题，直接解压核心工具）
+          # 安装完整Clang工具链（从Android官方源，确保ld.lld完整）
           wget -q https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/tags/android-14.0.0_r1/clang-r487747c.tar.gz
           sudo mkdir -p /opt/clang
-          # 解压bin目录下的核心工具（clang、ld.lld）
-          sudo tar -zxf clang-r487747c.tar.gz -C /opt/clang bin/clang bin/ld.lld
+          # 解压完整工具链（而非仅bin目录，确保依赖齐全）
+          sudo tar -zxf clang-r487747c.tar.gz -C /opt/clang
           # 手动创建aarch64交叉编译器软链接（内核编译必需）
           sudo ln -s /opt/clang/bin/clang /opt/clang/bin/aarch64-linux-android-clang
           sudo ln -s /opt/clang/bin/ld.lld /opt/clang/bin/aarch64-linux-android-ld.lld
+          # 显式添加工具链路径到环境变量（优先级最高）
           echo "/opt/clang/bin" >> $GITHUB_PATH
+          # 验证工具链是否可用
+          clang --version || { echo "❌ Clang安装失败"; exit 1; }
+          ld.lld --version || { echo "❌ ld.lld安装失败"; exit 1; }
           # 立即清理安装包和缓存
           sudo apt clean && sudo rm -rf /var/lib/apt/lists/* clang-r487747c.tar.gz
           df -h
           echo "✅ 依赖安装完成，剩余空间：$(df -h / | awk 'NR==2 {print $4}')"
-
       - name: 稳定浅克隆+精准拉取（修复HTTP 400错误）
         run: |
           mkdir -p ~/android-kernel && cd ~/android-kernel
@@ -58,37 +58,37 @@ jobs:
           cd gki-6.1.118
           # 2. 拉取目标提交（若浅克隆中没有，自动补充）
           git fetch origin 367540fdf98147e0e5cd42d42ff4867ebd8ea7ef
-          # 3. 检出目标提交
+          # 3. 检出目标提交（忽略detached HEAD警告，不影响编译）
           git checkout 367540fdf98147e0e5cd42d42ff4867ebd8ea7ef
-          # 4. 应用设备.config并生成编译依赖
+          # 4. 应用设备.config并生成编译依赖（显式指定工具链路径）
           cp $GITHUB_WORKSPACE/.github/.config .config
-          make ARCH=arm64 CROSS_COMPILE=aarch64-linux-android- \
-               CC=clang LD=ld.lld modules_prepare -j$(nproc)
+          make ARCH=arm64 CROSS_COMPILE=/opt/clang/bin/aarch64-linux-android- \
+               CC=/opt/clang/bin/clang LD=/opt/clang/bin/ld.lld modules_prepare -j$(nproc)
           # 5. 清理无用文件（进一步省空间）
           rm -rf .git Documentation samples scripts tools
           df -h
           echo "✅ 内核源码准备完成，占用空间：$(du -sh . | awk '{print $1}')，剩余空间：$(df -h / | awk 'NR==2 {print $4}')"
-
       - name: 编译驱动（禁用调试+压缩产物）
         run: |
           mkdir -p gki-driver && cd gki-driver
           cp $GITHUB_WORKSPACE/.github/cmboo.c ./
-          # 生成精简Makefile（禁用调试信息，压缩产物）
+          # 生成精简Makefile（显式指定工具链路径，避免找不到）
           cat > Makefile << 'EOF'
           obj-m += cmboo.o
           KERNELDIR ?= ~/android-kernel/gki-6.1.118
           PWD := $(shell pwd)
           ARCH := arm64
-          CC := clang
-          LD := ld.lld
-          CROSS_COMPILE := aarch64-linux-android-
+          # 显式指定工具链绝对路径
+          CC := /opt/clang/bin/clang
+          LD := /opt/clang/bin/ld.lld
+          CROSS_COMPILE := /opt/clang/bin/aarch64-linux-android-
           # 禁用调试信息+压缩代码（大幅减少产物体积）
           EXTRA_CFLAGS := -fvisibility=hidden -ffunction-sections -fdata-sections \
             -DKMI_VERSION=6.1 -DCLEANUP_HOOK_ENABLED -O2 -s \
             -Wno-error -Wno-unused-parameter -Wno-implicit-function-declaration
           EXTRA_LDFLAGS := -Wl,--gc-sections -Wl,--strip-all -Wl,--hash-style=gnu
           all:
-          	$(MAKE) -C $(KERNELDIR) M=$(PWD) ARCH=$(ARCH) CC=$(CC) LD=$(LD) CROSS_COMPILEILE=$(CROSS_COMPILE) modules -j$(nproc)
+          	$(MAKE) -C $(KERNELDIR) M=$(PWD) ARCH=$(ARCH) CC=$(CC) LD=$(LD) CROSS_COMPILE=$(CROSS_COMPILE) modules -j$(nproc)
           	cp cmboo.ko crypto_evt.ko && strip --strip-debug crypto_evt.ko
           	rm -f cmboo.ko cmboo.mod.o cmboo.mod.c .*.cmd
           clean:
@@ -101,7 +101,6 @@ jobs:
           file crypto_evt.ko | grep -q "ARM aarch64" || { echo "ERROR: 架构不匹配！"; exit 1; }
           df -h
           echo "✅ 驱动编译成功，产物大小：$(du -sh crypto_evt.ko | awk '{print $1}')，剩余空间：$(df -h / | awk 'NR==2 {print $4}')"
-
       - name: 生成加载脚本并上传产物
         run: |
           mkdir -p output
@@ -110,7 +109,7 @@ jobs:
           set -euo pipefail
           MOD_PATH="/data/.hidden/crypto_evt.ko"
           MOD_DIR=$(dirname $MOD_PATH)
-          mkdir -p $MOD_DIR && chmod 700 $MOD_DIR
+          mkdir -p $MOD_DIR && && chmod 700 $MOD_DIR
           [ -f "./crypto_evt.ko" ] && cp ./crypto_evt.ko $MOD_PATH || { echo "驱动未找到！"; exit 1; }
           chmod 600 $MOD_PATH
           if insmod $MOD_PATH; then
@@ -125,7 +124,6 @@ jobs:
           EOF
           chmod 755 output/load_driver.sh
           echo "✅ 开始上传产物..."
-
       - name: 上传产物
         uses: actions/upload-artifact@v4
         with:
