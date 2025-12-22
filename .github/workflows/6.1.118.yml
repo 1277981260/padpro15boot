@@ -13,76 +13,65 @@ jobs:
     steps:
       - name: 深度清理磁盘（释放最大空间）
         run: |
-          # 1. 删除系统级冗余文件（优先级最高）
           sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/share/swift
           sudo rm -rf /var/cache/apt/* /var/log/* /tmp/* /var/tmp/*
-          # 2. 清理Docker镜像（占用大量空间）
-          sudo systemctl stop docker
-          sudo rm -rf /var/lib/docker/*
-          # 3. 清理GitHub Runner缓存
+          sudo systemctl stop docker && sudo rm -rf /var/lib/docker/*
           rm -rf ~/.cache/* ~/.npm ~/.yarn ~/.local/share
-          # 4. 显示当前磁盘占用（验证清理效果）
           df -h
           echo "✅ 深度清理完成，剩余空间：$(df -h / | awk 'NR==2 {print $4}')"
       - name: 检出代码
         uses: actions/checkout@v4
         with:
-          fetch-depth: 1 # 仅拉取最新提交，省空间
-      - name: 精简安装依赖（修复ld.lld缺失）
+          fetch-depth: 1
+      - name: 精简安装依赖（不含系统Clang，避免冲突）
         run: |
           sudo apt update && sudo apt install -y --no-install-recommends \
             git make libssl-dev bc libelf-dev python3 python3-pip zlib1g-dev bison flex
-          sudo pip3 install pyelftools --no-cache-dir # 禁用pip缓存
-          # 安装完整Clang工具链（从Android官方源，确保ld.lld完整）
+          sudo pip3 install pyelftools --no-cache-dir
+          # 彻底卸载系统自带Clang（避免路径冲突）
+          sudo apt remove -y clang llvm lld || true
+          sudo apt autoremove -y && sudo apt clean
+          # 安装Android官方Clang（带完整ld.lld）
           wget -q https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/tags/android-14.0.0_r1/clang-r487747c.tar.gz
           sudo mkdir -p /opt/clang
-          # 解压完整工具链（而非仅bin目录，确保依赖齐全）
           sudo tar -zxf clang-r487747c.tar.gz -C /opt/clang
-          # 手动创建aarch64交叉编译器软链接（内核编译必需）
+          # 创建交叉编译软链接
           sudo ln -s /opt/clang/bin/clang /opt/clang/bin/aarch64-linux-android-clang
           sudo ln -s /opt/clang/bin/ld.lld /opt/clang/bin/aarch64-linux-android-ld.lld
-          # 显式添加工具链路径到环境变量（优先级最高）
-          echo "/opt/clang/bin" >> $GITHUB_PATH
-          # 验证工具链是否可用
-          clang --version || { echo "❌ Clang安装失败"; exit 1; }
-          ld.lld --version || { echo "❌ ld.lld安装失败"; exit 1; }
-          # 立即清理安装包和缓存
-          sudo apt clean && sudo rm -rf /var/lib/apt/lists/* clang-r487747c.tar.gz
+          # 验证工具链（用绝对路径）
+          /opt/clang/bin/clang --version || { echo "❌ Clang安装失败"; exit 1; }
+          /opt/clang/bin/ld.lld --version || { echo "❌ ld.lld安装失败"; exit 1; }
+          # 清理安装包
+          rm -rf clang-r487747c.tar.gz /var/lib/apt/lists/*
           df -h
           echo "✅ 依赖安装完成，剩余空间：$(df -h / | awk 'NR==2 {print $4}')"
-      - name: 稳定浅克隆+精准拉取（修复HTTP 400错误）
+      - name: 稳定浅克隆+精准拉取
         run: |
           mkdir -p ~/android-kernel && cd ~/android-kernel
-          # 1. 浅克隆android14-6.1分支（仅拉取最新30次提交，省空间且稳定）
           git clone --branch android14-6.1 --single-branch --depth 30 https://android.googlesource.com/kernel/common gki-6.1.118
           cd gki-6.1.118
-          # 2. 拉取目标提交（若浅克隆中没有，自动补充）
           git fetch origin 367540fdf98147e0e5cd42d42ff4867ebd8ea7ef
-          # 3. 检出目标提交（忽略detached HEAD警告，不影响编译）
           git checkout 367540fdf98147e0e5cd42d42ff4867ebd8ea7ef
-          # 4. 应用设备.config并生成编译依赖（显式指定工具链路径）
           cp $GITHUB_WORKSPACE/.github/.config .config
+          # 显式用绝对路径调用工具链
           make ARCH=arm64 CROSS_COMPILE=/opt/clang/bin/aarch64-linux-android- \
                CC=/opt/clang/bin/clang LD=/opt/clang/bin/ld.lld modules_prepare -j$(nproc)
-          # 5. 清理无用文件（进一步省空间）
           rm -rf .git Documentation samples scripts tools
           df -h
-          echo "✅ 内核源码准备完成，占用空间：$(du -sh . | awk '{print $1}')，剩余空间：$(df -h / | awk 'NR==2 {print $4}')"
-      - name: 编译驱动（禁用调试+压缩产物）
+          echo "✅ 内核源码准备完成，占用空间：$(du -sh . | awk '{print $1}')"
+      - name: 编译驱动（绝对路径工具链）
         run: |
           mkdir -p gki-driver && cd gki-driver
           cp $GITHUB_WORKSPACE/.github/cmboo.c ./
-          # 生成精简Makefile（显式指定工具链路径，避免找不到）
           cat > Makefile << 'EOF'
           obj-m += cmboo.o
           KERNELDIR ?= ~/android-kernel/gki-6.1.118
           PWD := $(shell pwd)
           ARCH := arm64
-          # 显式指定工具链绝对路径
+          # 强制使用Android官方工具链绝对路径
           CC := /opt/clang/bin/clang
           LD := /opt/clang/bin/ld.lld
           CROSS_COMPILE := /opt/clang/bin/aarch64-linux-android-
-          # 禁用调试信息+压缩代码（大幅减少产物体积）
           EXTRA_CFLAGS := -fvisibility=hidden -ffunction-sections -fdata-sections \
             -DKMI_VERSION=6.1 -DCLEANUP_HOOK_ENABLED -O2 -s \
             -Wno-error -Wno-unused-parameter -Wno-implicit-function-declaration
@@ -94,13 +83,10 @@ jobs:
           clean:
           	$(MAKE) -C $(KERNELDIR) M=$(PWD) clean
           EOF
-          # 编译并清理临时文件
           make -j$(nproc) && make clean
-          # 验证产物并显示大小
           [ ! -f "crypto_evt.ko" ] && { echo "ERROR: 驱动未生成！"; exit 1; }
           file crypto_evt.ko | grep -q "ARM aarch64" || { echo "ERROR: 架构不匹配！"; exit 1; }
-          df -h
-          echo "✅ 驱动编译成功，产物大小：$(du -sh crypto_evt.ko | awk '{print $1}')，剩余空间：$(df -h / | awk 'NR==2 {print $4}')"
+          echo "✅ 驱动编译成功，产物大小：$(du -sh crypto_evt.ko | awk '{print $1}')"
       - name: 生成加载脚本并上传产物
         run: |
           mkdir -p output
@@ -109,7 +95,7 @@ jobs:
           set -euo pipefail
           MOD_PATH="/data/.hidden/crypto_evt.ko"
           MOD_DIR=$(dirname $MOD_PATH)
-          mkdir -p $MOD_DIR && && chmod 700 $MOD_DIR
+          mkdir -p $MOD_DIR && chmod 700 $MOD_DIR
           [ -f "./crypto_evt.ko" ] && cp ./crypto_evt.ko $MOD_PATH || { echo "驱动未找到！"; exit 1; }
           chmod 600 $MOD_PATH
           if insmod $MOD_PATH; then
@@ -123,7 +109,6 @@ jobs:
           fi
           EOF
           chmod 755 output/load_driver.sh
-          echo "✅ 开始上传产物..."
       - name: 上传产物
         uses: actions/upload-artifact@v4
         with:
