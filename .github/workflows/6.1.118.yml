@@ -72,17 +72,16 @@ jobs:
           # 仅清理.git和文档，保留所有编译必需文件
           rm -rf .git Documentation samples
           echo "✅ 内核源码准备完成（步骤无删减）"
-      - name: 编译驱动（修复产物清理顺序）
+      - name: 编译驱动（还原稳定逻辑，不新增多余操作）
         run: |
           mkdir -p gki-driver && cd gki-driver
           cp $GITHUB_WORKSPACE/.github/cmboo.c ./
-          # 保留完整的Makefile配置，修复清理顺序
+          # 还原完整的Makefile配置
           cat > Makefile << 'EOF'
           obj-m += cmboo.o
           KERNELDIR ?= ~/android-kernel/gki-6.1.118
           PWD := $(shell pwd)
           ARCH := arm64
-          # 保留所有已验证的工具路径定义
           CC := /opt/clang/bin/clang
           LD := /opt/clang/bin/ld.lld
           NM := /opt/clang/bin/aarch64-linux-android-nm
@@ -90,7 +89,6 @@ jobs:
           OBJCOPY := /opt/clang/bin/aarch64-linux-android-objcopy
           STRIP := /opt/clang/bin/aarch64-linux-android-strip
           CROSS_COMPILE := /opt/clang/bin/aarch64-linux-android-
-          # 保留已验证的编译参数（禁用调试信息避免警告）
           EXTRA_CFLAGS := -fvisibility=hidden -ffunction-sections -fdata-sections \
             -DKMI_VERSION=6.1 -DCLEANUP_HOOK_ENABLED -O2 -s -g0 \
             -Wno-error -Wno-unused-parameter -Wno-implicit-function-declaration
@@ -99,24 +97,21 @@ jobs:
           	$(MAKE) -C $(KERNELDIR) M=$(PWD) ARCH=$(ARCH) CC=$(CC) LD=$(LD) NM=$(NM) OBJDUMP=$(OBJDUMP) OBJCOPY=$(OBJCOPY) CROSS_COMPILE=$(CROSS_COMPILE) modules -j$(nproc) V=1
           	cp cmboo.ko crypto_evt.ko
           	$(STRIP) --strip-debug crypto_evt.ko
-          	# 只删除中间文件，不删除最终产物
           	rm -f cmboo.ko cmboo.mod.o cmboo.mod.c .*.cmd modules.order Module.symvers
           clean:
           	$(MAKE) -C $(KERNELDIR) M=$(PWD) clean
           EOF
-          # 编译驱动（先编译，再验证产物，最后清理中间文件）
+          # 编译驱动（仅编译、验证，不新增复制）
           if ! make -j$(nproc) V=1; then
             echo "❌ 驱动编译失败，查看详细日志"
             exit 1
           fi
-          # 验证产物（在make clean之前执行）
+          # 验证产物存在
           [ ! -f "crypto_evt.ko" ] && { echo "ERROR: 驱动未生成！"; exit 1; }
           file crypto_evt.ko | grep -q "ARM aarch64" || { echo "ERROR: 架构不匹配！"; exit 1; }
           echo "✅ 驱动编译成功，产物大小：$(du -sh crypto_evt.ko | awk '{print $1}')"
-          # 最后清理中间文件（不影响产物）
+          # 仅清理中间文件，不碰产物
           make clean
-          # 复制产物到输出目录，避免路径识别问题
-          cp crypto_evt.ko ../output/
       - name: 生成加载脚本
         run: |
           mkdir -p output
@@ -139,12 +134,12 @@ jobs:
           fi
           EOF
           chmod 755 output/load_driver.sh
-      - name: 上传产物（修复路径格式）
+      - name: 上传产物（指定正确路径，不新增多余操作）
         uses: actions/upload-artifact@v4
         with:
           name: 6.1.118-Clang-Driver-OnePlusPadPro
-          path: |
-            output/crypto_evt.ko
+          path:
+            gki-driver/crypto_evt.ko
             output/load_driver.sh
           retention-days: 30
           if-no-files-found: error
