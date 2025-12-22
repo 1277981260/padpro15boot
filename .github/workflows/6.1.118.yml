@@ -47,7 +47,8 @@ jobs:
       - name: 稳定浅克隆+精准拉取+创建KMI白名单文件
         run: |
           mkdir -p ~/android-kernel && cd ~/android-kernel
-          git clone --branchbranch android14-6.1 --single-branch --depth 30 https://android.googlesource.com/kernel/common gki-6.1.118
+          # 修正笔误：--branch 后面直接跟分支名，去掉多余的branch
+          git clone --branch android14-6.1 --single-branch --depth 30 https://android.googlesource.com/kernel/common gki-6.1.118
           cd gki-6.1.118
           git fetch origin 367540fdf98147e0e5cd42d42ff4867ebd8ea7ef
           git checkout 367540fdf98147e0e5cd42d42ff4867ebd8ea7ef
