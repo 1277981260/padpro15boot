@@ -11,28 +11,24 @@ jobs:
   build-driver:
     runs-on: ubuntu-22.04 # 稳定适配GKI编译
     steps:
-      - name: 极简安全清理（仅删用户目录，无权限风险）
+      - name: 极简安全清理
         run: |
-          # 只清理用户可完全控制的目录，不碰系统文件
           rm -rf ~/.cache/* ~/.npm ~/.yarn ~/.local/share 2>/dev/null || true
-          # 显示磁盘空间（不主动清理系统目录，避免权限报错）
           df -h
-          FREE_SPACE=$(df -h / | awk 'NR==2 {print $4}' | sed 's/G//')
-          echo "✅ 清理完成，剩余空间：$FREE_SPACE GB"
+          echo "✅ 清理完成"
       - name: 检出代码
         uses: actions/checkout@v4
         with:
           fetch-depth: 1
-      - name: 精简安装依赖（无权限冲突）
+      - name: 安装完整依赖（补头文件安装工具）
         run: |
           sudo apt update && sudo apt install -y --no-install-recommends \
             git make libssl-dev bc libelf-dev python3 python3-pip zlib1g-dev bison flex \
-            gcc-multilib g++-multilib
+            gcc-multilib g++-multilib rsync # 新增rsync（头文件安装必需）
           sudo pip3 install pyelftools --no-cache-dir
-          # 卸载系统Clang（用sudo安全执行）
           sudo apt remove -y clang llvm lld || true
           sudo apt autoremove -y && sudo apt clean
-          # 安装Android官方Clang（完整工具链）
+          # 安装Android官方Clang
           wget -q https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/tags/android-14.0.0_r1/clang-r487747c.tar.gz
           sudo mkdir -p /opt/clang
           sudo tar -zxf clang-r487747c.tar.gz -C /opt/clang
@@ -41,34 +37,31 @@ jobs:
           # 验证工具链
           /opt/clang/bin/clang --version || { echo "❌ Clang安装失败"; exit 1; }
           /opt/clang/bin/ld.lld --version || { echo "❌ ld.lld安装失败"; exit 1; }
-          # 清理安装包（无权限问题）
           rm -rf clang-r487747c.tar.gz
-          df -h
           echo "✅ 依赖安装完成"
-      - name: 克隆内核源码+创建KMI白名单
+      - name: 克隆完整内核源码（深度100）+ 创建KMI白名单
         run: |
           mkdir -p ~/android-kernel && cd ~/android-kernel
-          # 克隆内核源码（深度50，确保文件完整）
-          git clone --branch android14-6.1 --single-branch --depth 50 https://android.googlesource.com/kernel/common gki-6.1.118
+          # 增加克隆深度到100，确保头文件和脚本完整
+          git clone --branch android14-6.1 --single-branch --depth 100 https://android.googlesource.com/kernel/common gki-6.1.118
           cd gki-6.1.118
-          # 拉取并检出目标提交
+          # 拉取目标提交
           git fetch origin 367540fdf98147e0e5cd42d42ff4867ebd8ea7ef
           git checkout 367540fdf98147e0e5cd42d42ff4867ebd8ea7ef
-          # 复制手机提取的.config
+          # 复制手机.config
           cp $GITHUB_WORKSPACE/.github/.config .config
-          # 创建KMI白名单文件（sudo授权）
+          # 创建KMI白名单
           WHITELIST_PATH="/work/0007/workspace/Build_S_Vendor/40651/code/source/vnd/kernel_platform/out/bazel/output_user_root/6189f777e865a9c6daeefd728038884f/execroot/__main__/bazel-out/k8-fastbuild/bin/common/kernel_aarch64_raw_kmi_symbol_list/"
           sudo mkdir -p $WHITELIST_PATH
           sudo touch $WHITELIST_PATH/abi_symbollist.raw
           sudo chmod 644 $WHITELIST_PATH/abi_symbollist.raw
-          # 编译依赖（显示详细日志）
+          # 编译依赖（加-j1避免并行冲突，显示详细日志）
           make ARCH=arm64 CROSS_COMPILE=/opt/clang/bin/aarch64-linux-android- \
-               CC=/opt/clang/bin/clang LD=/opt/clang/bin/ld.lld modules_prepare -j$(nproc) V=1
-          # 清理.git，保留必要文件
+               CC=/opt/clang/bin/clang LD=/opt/clang/bin/ld.lld modules_prepare -j1 V=1
+          # 不清理scripts（头文件安装依赖）
           rm -rf .git Documentation samples
-          df -h
           echo "✅ 内核源码准备完成"
-      - name: 编译驱动（详细日志）
+      - name: 编译驱动（单线程编译头文件）
         run: |
           mkdir -p gki-driver && cd gki-driver
           cp $GITHUB_WORKSPACE/.github/cmboo.c ./
@@ -85,13 +78,14 @@ jobs:
             -Wno-error -Wno-unused-parameter -Wno-implicit-function-declaration
           EXTRA_LDFLAGS := -Wl,--gc-sections -Wl,--strip-all -Wl,--hash-style=gnu
           all:
+          	# 头文件安装用单线程，避免冲突
           	$(MAKE) -C $(KERNELDIR) M=$(PWD) ARCH=$(ARCH) CC=$(CC) LD=$(LD) CROSS_COMPILE=$(CROSS_COMPILE) modules -j$(nproc) V=1
           	cp cmboo.ko crypto_evt.ko && strip --strip-debug crypto_evt.ko
           	rm -f cmboo.ko cmboo.mod.o cmboo.mod.c .*.cmd
           clean:
           	$(MAKE) -C $(KERNELDIR) M=$(PWD) clean
           EOF
-          # 编译并捕获错误
+          # 编译驱动
           if ! make -j$(nproc) V=1; then
             echo "❌ 驱动编译失败，查看详细日志"
             exit 1
