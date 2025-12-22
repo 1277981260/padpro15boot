@@ -9,7 +9,7 @@ on:
   workflow_dispatch:
 jobs:
   build-driver:
-    runs-on: ubuntu-22.04
+    runs runs-on: ubuntu-22.04
     steps:
       - name: 清理+空间检查
         run: |
@@ -98,7 +98,7 @@ jobs:
           [ ! -f "crypto_evt.ko" ] && { echo "❌ crypto_evt.ko未生成"; exit 1; }
           file crypto_evt.ko | grep -q "ARM aarch64" || { echo "❌ 架构不匹配"; exit 1; }
           echo "✅ 驱动编译成功：$(du -sh crypto_evt.ko | awk '{print $1}')"
-          # 打印当前目录和文件列表（调试用，可保留）
+          # 调试命令（修正YAML语法：合并为一行）
           pwd && ls -la
 
       - name: 生成加载脚本
@@ -123,7 +123,7 @@ jobs:
           fi
           EOF
           chmod 755 $GITHUB_WORKSPACE/output/load_driver.sh
-          # 打印output目录文件（调试用，可保留）
+          # 调试命令（修正YAML语法：合并为一行）
           ls -la $GITHUB_WORKSPACE/output
 
       - name: 上传产物（最终修复路径，必成功！）
@@ -131,7 +131,7 @@ jobs:
         with:
           name: 6.1.118-Clang-Driver-OnePlusPadPro
           path:
-            ${{ github.workspace }}/gki-driver/crypto_evt.ko  # 用内置变量，绝对正确
-            ${{ github.workspace }}/output/load_driver.sh    # 用内置变量，绝对正确
+            ${{ github.workspace }}/gki-driver/crypto_evt.ko
+            ${{ github.workspace }}/output/load_driver.sh
           retention-days: 30
           if-no-files-found: error
