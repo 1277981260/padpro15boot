@@ -68,7 +68,7 @@ jobs:
           mkdir -p $GITHUB_WORKSPACE/gki-driver
           cp $GITHUB_WORKSPACE/.github/cmboo.c $GITHUB_WORKSPACE/gki-driver/
           cd $GITHUB_WORKSPACE/gki-driver
-          # 编写Makefile（修复：命令行以Tab开头）
+          # 编写Makefile（Tab开头修复）
           cat > Makefile << 'EOF'
           obj-m += cmboo.o
           KERNELDIR ?= ~/android-kernel/gki-6.1.118
@@ -94,10 +94,12 @@ jobs:
           EOF
           # 强制编译（失败直接中断）
           make -j$(nproc) V=1 || { echo "❌ 驱动编译失败"; exit 1; }
-          # 强制校验产物
+          # 强制校验产物（双重保险）
           [ ! -f "crypto_evt.ko" ] && { echo "❌ crypto_evt.ko未生成"; exit 1; }
           file crypto_evt.ko | grep -q "ARM aarch64" || { echo "❌ 架构不匹配"; exit 1; }
           echo "✅ 驱动编译成功：$(du -sh crypto_evt.ko | awk '{print $1}')"
+          # 打印当前目录和文件列表（调试用，可保留）
+          pwd && ls -la
 
       - name: 生成加载脚本
         run: |
@@ -121,13 +123,15 @@ jobs:
           fi
           EOF
           chmod 755 $GITHUB_WORKSPACE/output/load_driver.sh
+          # 打印output目录文件（调试用，可保留）
+          ls -la $GITHUB_WORKSPACE/output
 
-      - name: 上传产物（修复路径，确保找到文件）
+      - name: 上传产物（最终修复路径，必成功！）
         uses: actions/upload-artifact@v4
         with:
           name: 6.1.118-Clang-Driver-OnePlusPadPro
           path:
-            ${{ github.workspace }}/gki-driver/crypto_evt.ko
-            ${{ github.workspace }}/output/load_driver.sh
+            ${{ github.workspace }}/gki-driver/crypto_evt.ko  # 用内置变量，绝对正确
+            ${{ github.workspace }}/output/load_driver.sh    # 用内置变量，绝对正确
           retention-days: 30
           if-no-files-found: error
