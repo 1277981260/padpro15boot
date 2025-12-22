@@ -548,12 +548,6 @@ if (proc_touch_dir) {
     remove_proc_entry("touch_mapper", NULL);
     pr_debug("Stealth: Proc资源已清理\n");
 }
-
-    if (proc_touch_dir) {
-        remove_proc_entry("reload_config", proc_touch_dir);
-        remove_proc_entry("touch_mapper", NULL);
-        pr_debug("Stealth: Proc资源已清理\n");
-    }
     
     // 5. 释放配置文件内存
     if (stealth_dev && stealth_dev->config.keymap_list) {
