@@ -44,30 +44,27 @@ jobs:
           rm -rf clang-r487747c.tar.gz
           df -h
           echo "✅ 依赖安装完成"
-      - name: 稳定浅克隆+精准拉取+修复KMI白名单
+      - name: 稳定浅克隆+精准拉取+创建KMI白名单文件
         run: |
           mkdir -p ~/android-kernel && cd ~/android-kernel
-          git clone --branch android14-6.1 --single-branch --depth 30 https://android.googlesource.com/kernel/common gki-6.1.118
+          git clone --branchbranch android14-6.1 --single-branch --depth 30 https://android.googlesource.com/kernel/common gki-6.1.118
           cd gki-6.1.118
           git fetch origin 367540fdf98147e0e5cd42d42ff4867ebd8ea7ef
           git checkout 367540fdf98147e0e5cd42d42ff4867ebd8ea7ef
           cp $GITHUB_WORKSPACE/.github/.config .config
           
-          # 核心修复：禁用KMI符号检查（无需白名单文件）
-          echo "# 禁用KMI符号白名单检查" >> .config
-          echo "CONFIG_MODULE_ALLOW_MISSING_NAMESPACE_IMPORTS=n" >> .config
-          echo "CONFIG_GKI_KMI_SELFTEST=n" >> .config
+          # 核心修复：创建缺失的白名单文件（按报错路径精确创建）
+          WHITELIST_PATH="/work/0007/workspace/Build_S_Vendor/40651/code/source/vnd/kernel_platform/out/bazel/output_user_root/6189f777e865a9c6daeefd728038884f/execroot/__main__/bazel-out/k8-fastbuild/bin/common/kernel_aarch64_raw_kmi_symbol_list/"
+          sudo mkdir -p $WHITELIST_PATH
+          sudo touch $WHITELIST_PATH/abi_symbollist.raw
+          sudo chmod 644 $WHITELIST_PATH/abi_symbollist.raw
           
-          # 或者：提供默认空白名单文件（二选一，当前用禁用方案更简单）
-          # mkdir -p /work/0007/workspace/Build_S_Vendor/40651/code/source/vnd/kernel_platform/out/bazel/output_user_root/6189f777e865a9c6daeefd728038884f/execroot/__main__/bazel-out/k8-fastbuild/bin/common/kernel_aarch64_raw_kmi_symbol_list/
-          # touch /work/0007/workspace/Build_S_Vendor/40651/code/source/vnd/kernel_platform/out/bazel/output_user_root/6189f777e865a9c6daeefd728038884f/execroot/__main__/bazel-out/k8-fastbuild/bin/common/kernel_aarch64_raw_kmi_symbol_list/abi_symbollist.raw
-          
-          # 编译依赖
+          # 编译依赖（显式指定工具链）
           make ARCH=arm64 CROSS_COMPILE=/opt/clang/bin/aarch64-linux-android- \
                CC=/opt/clang/bin/clang LD=/opt/clang/bin/ld.lld modules_prepare -j$(nproc)
           rm -rf .git Documentation samples scripts tools
           df -h
-          echo "✅ 内核源码准备完成"
+          echo "✅ 内核源码准备完成（已创建KMI白名单文件）"
       - name: 编译驱动（绝对路径工具链）
         run: |
           mkdir -p gki-driver && cd gki-driver
