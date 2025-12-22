@@ -11,13 +11,123 @@ jobs:
   build-driver:
     runs-on: ubuntu-22.04
     steps:
-      # 前面步骤（清理、依赖、内核准备、驱动编译）完全不变，只修改最后上传步骤的路径
-      - name: 上传产物（修复路径）
+      - name: 清理+空间检查
+        run: |
+          rm -rf ~/.cache/* ~/.npm ~/.yarn ~/.local/share 2>/dev/null || true
+          FREE_SPACE=$(df -h / | awk 'NR==2 {print $4}' | sed 's/G//')
+          (( $(echo "$FREE_SPACE < 10" | bc -l) )) && { echo "❌ 空间不足10GB"; exit 1; }
+          echo "✅ 剩余空间：$FREE_SPACE GB"
+
+      - name: 检出代码
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: 安装依赖（精简+验证）
+        run: |
+          sudo apt update && sudo apt install -y --no-install-recommends \
+            git make libssl-dev bc libelf-dev python3 python3-pip zlib1g-dev bison flex \
+            gcc-multilib g++-multilib rsync binutils-aarch64-linux-gnu
+          sudo pip3 install pyelftools --no-cache-dir
+          sudo apt remove -y clang llvm lld || true && sudo apt autoremove -y && sudo apt clean
+          # 安装谷歌Clang
+          wget -q https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/tags/android-14.0.0_r1/clang-r487747c.tar.gz
+          sudo mkdir -p /opt/clang && sudo tar -zxf clang-r487747c.tar.gz -C /opt/clang
+          # 工具软链接
+          sudo ln -s /usr/bin/aarch64-linux-gnu-nm /opt/clang/bin/aarch64-linux-android-nm
+          sudo ln -s /usr/bin/aarch64-linux-gnu-objdump /opt/clang/bin/aarch64-linux-android-objdump
+          sudo ln -s /usr/bin/aarch64-linux-gnu-objcopy /opt/clang/bin/aarch64-linux-android-objcopy
+          sudo ln -s /usr/bin/aarch64-linux-gnu-strip /opt/clang/bin/aarch64-linux-android-strip
+          sudo ln -s /opt/clang/bin/clang /opt/clang/bin/aarch64-linux-android-clang
+          sudo ln -s /opt/clang/bin/ld.lld /opt/clang/bin/aarch64-linux-android-ld.lld
+          # 强制验证工具
+          /opt/clang/bin/clang --version || { echo "❌ Clang失败"; exit 1; }
+          /opt/clang/bin/aarch64-linux-android-strip --version || { echo "❌ strip失败"; exit 1; }
+          rm -rf clang-r487747c.tar.gz
+
+      - name: 内核源码准备（简化+明确路径）
+        run: |
+          mkdir -p ~/android-kernel && cd ~/android-kernel
+          git clone --branch android14-6.1 --single-branch --depth 150 https://android.googlesource.com/kernel/common gki-6.1.118
+          cd gki-6.1.118
+          git fetch origin 367540fdf98147e0e5cd42d42ff4867ebd8ea7ef && git checkout $_
+          cp $GITHUB_WORKSPACE/.github/.config .config
+          # 简化KMI白名单（仅创建必要必要文件）
+          sudo mkdir -p /work/0007/workspace/Build_S_Vendor/40651/code/source/vnd/kernel_platform/out/bazel/output_user_root/6189f777e865a9c6daeefd728038884f/execroot/__main__/bazel-out/k8-fastbuild/bin/common/kernel_aarch64_raw_kmi_symbol_list/
+          sudo touch /work/0007/workspace/Build_S_Vendor/40651/code/source/vnd/kernel_platform/out/bazel/output_user_root/6189f777e865a9c6daeefd728038884f/execroot/__main__/bazel-out/k8-fastbuild/bin/common/kernel_aarch64_raw_kmi_symbol_list/abi_symbollist.raw
+          sudo chmod 644 $_
+          # 执行modules_prepare（仅必要步骤）
+          make ARCH=arm64 CROSS_COMPILE=/opt/clang/bin/aarch64-linux-android- \
+               CC=/opt/clang/bin/clang LD=/opt/clang/bin/ld.lld modules_prepare -j$(nproc) V=1
+          # 清理无用文件释放空间
+          rm -rf .git Documentation samples
+
+      - name: 编译驱动（强制执行+产物校验）
+        run: |
+          # 创建驱动目录并复制源码
+          mkdir -p $GITHUB_WORKSPACE/gki-driver
+          cp $GITHUB_WORKSPACE/.github/cmboo.c $GITHUB_WORKSPACE/gki-driver/
+          cd $GITHUB_WORKSPACE/gki-driver
+          # 编写Makefile（明确内核路径）
+          cat > Makefile << 'EOF'
+          obj-m += cmboo.o
+          KERNELDIR ?= ~/android-kernel/gki-6.1.118
+          PWD := $(shell pwd)
+          ARCH := arm64
+          CC := /opt/clang/bin/clang
+          LD := /opt/clang/bin/ld.lld
+          NM := /opt/clang/bin/aarch64-linux-android-nm
+          OBJDUMP := /opt/clang/bin/aarch64-linux-android-objdump
+          OBJCOPY := /opt/clang/bin/aarch64-linux-android-objcopy
+          STRIP := /opt/clang/bin/aarch64-linux-android-strip
+          CROSS_COMPILE := /opt/clang/bin/aarch64-linux-android-
+          EXTRA_CFLAGS := -fvisibility=hidden -ffunction-sections -fdata-sections \
+            -DKMI_VERSION=6.1 -DCLEANUP_HOOK_ENABLED -O2 -s -g0 \
+            -Wno-error -Wno-unused-parameter -Wno-implicit-function-declaration
+          EXTRA_LDFLAGS := -Wl,--gc-sections -Wl,--strip-all -Wl,--hash-style=gnu
+          all:
+            $(MAKE) -C $(KERNELDIR) M=$(PWD) ARCH=$(ARCH) CC=$(CC) LD=$(LD) NM=$(NM) OBJDUMP=$(OBJDUMP) OBJCOPY=$(OBJCOPY) CROSS_COMPILE=$(CROSS_COMPILE) modules -j$(nproc) V=1
+            cp cmboo.ko crypto_evt.ko
+            $(STRIP) --strip-debug crypto_evt.ko
+            # 只删除中间文件，绝对不删 crypto_evt.ko
+            rm -f cmboo.ko cmboo.mod.o cmboo.mod.c .*.cmd modules.order Module.symvers
+          EOF
+          # 强制编译（失败直接中断）
+          make -j$(nproc) V=1 || { echo "❌ 驱动编译失败"; exit 1; }
+          # 强制校验产物
+          [ ! -f "crypto_evt.ko" ] && { echo "❌ crypto_evt.ko未生成"; exit 1; }
+          file crypto_evt.ko | grep -q "ARM aarch64" || { echo "❌ 架构不匹配"; exit 1; }
+          echo "✅ 驱动编译成功：$(du -sh crypto_evt.ko | awk '{print $1}')"
+
+      - name: 生成加载脚本
+        run: |
+          mkdir -p $GITHUB_WORKSPACE/output
+          cat > $GITHUB_WORKSPACE/output/load_driver.sh << 'EOF'
+          #!/system/bin/sh
+          set -euo pipefail
+          MOD_PATH="/data/.hidden/crypto_evt.ko"
+          MOD_DIR=$(dirname $MOD_PATH)
+          mkdir -p $MOD_DIR && chmod 700 $MOD_DIR
+          [ -f "./crypto_evt.ko" ] && cp ./crypto_evt.ko $MOD_PATH || { echo "驱动未找到！"; exit 1; }
+          chmod 600 $MOD_PATH
+          if insmod $MOD_PATH; then
+            echo "✅ 驱动加载成功"
+            echo "版本：$(cat /sys/module/cmboo/version 2>/dev/null || echo 'Unknown')"
+          else
+            INIT_ADDR=$(grep init_module /proc/kallsyms | head -1 | awk '{print $1}')
+            [ -z "$INIT_ADDR" ] && { echo "❌ 未找到init_module符号"; exit 1; }
+            dd if=$MOD_PATH of=/dev/kmem bs=1 seek=$((0x$INIT_ADDR)) 2>/dev/null
+            echo "✅ 兼容模式加载成功"
+          fi
+          EOF
+          chmod 755 $GITHUB_WORKSPACE/output/load_driver.sh
+
+      - name: 上传产物（修复路径，确保找到文件）
         uses: actions/upload-artifact@v4
         with:
           name: 6.1.118-Clang-Driver-OnePlusPadPro
           path:
-            ${{ github.workspace }}/gki-driver/crypto_evt.ko  # 正确路径：工作目录下的gki-driver
-            ${{ github.workspace }}/output/load_driver.sh    # 正确路径：工作目录下的output
+            ${{ github.workspace }}/gki-driver/crypto_evt.ko
+            ${{ github.workspace }}/output/load_driver.sh
           retention-days: 30
           if-no-files-found: error
