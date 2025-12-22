@@ -52,7 +52,7 @@ jobs:
           cd gki-6.1.118
           git fetch origin 367540fdf98147e0e5cd42d42ff4867ebd8ea7ef && git checkout $_
           cp $GITHUB_WORKSPACE/.github/.config .config
-          # 简化KMI白名单（仅创建必要必要文件）
+          # 简化KMI白名单（仅创建必要文件）
           sudo mkdir -p /work/0007/workspace/Build_S_Vendor/40651/code/source/vnd/kernel_platform/out/bazel/output_user_root/6189f777e865a9c6daeefd728038884f/execroot/__main__/bazel-out/k8-fastbuild/bin/common/kernel_aarch64_raw_kmi_symbol_list/
           sudo touch /work/0007/workspace/Build_S_Vendor/40651/code/source/vnd/kernel_platform/out/bazel/output_user_root/6189f777e865a9c6daeefd728038884f/execroot/__main__/bazel-out/k8-fastbuild/bin/common/kernel_aarch64_raw_kmi_symbol_list/abi_symbollist.raw
           sudo chmod 644 $_
@@ -68,7 +68,7 @@ jobs:
           mkdir -p $GITHUB_WORKSPACE/gki-driver
           cp $GITHUB_WORKSPACE/.github/cmboo.c $GITHUB_WORKSPACE/gki-driver/
           cd $GITHUB_WORKSPACE/gki-driver
-          # 编写Makefile（明确内核路径）
+          # 编写Makefile（修复：命令行以Tab开头）
           cat > Makefile << 'EOF'
           obj-m += cmboo.o
           KERNELDIR ?= ~/android-kernel/gki-6.1.118
@@ -86,11 +86,11 @@ jobs:
             -Wno-error -Wno-unused-parameter -Wno-implicit-function-declaration
           EXTRA_LDFLAGS := -Wl,--gc-sections -Wl,--strip-all -Wl,--hash-style=gnu
           all:
-            $(MAKE) -C $(KERNELDIR) M=$(PWD) ARCH=$(ARCH) CC=$(CC) LD=$(LD) NM=$(NM) OBJDUMP=$(OBJDUMP) OBJCOPY=$(OBJCOPY) CROSS_COMPILE=$(CROSS_COMPILE) modules -j$(nproc) V=1
-            cp cmboo.ko crypto_evt.ko
-            $(STRIP) --strip-debug crypto_evt.ko
-            # 只删除中间文件，绝对不删 crypto_evt.ko
-            rm -f cmboo.ko cmboo.mod.o cmboo.mod.c .*.cmd modules.order Module.symvers
+          	$(MAKE) -C $(KERNELDIR) M=$(PWD) ARCH=$(ARCH) CC=$(CC) LD=$(LD) NM=$(NM) OBJDUMP=$(OBJDUMP) OBJCOPY=$(OBJCOPY) CROSS_COMPILE=$(CROSS_COMPILE) modules -j$(nproc) V=1
+          	cp cmboo.ko crypto_evt.ko
+          	$(STRIP) --strip-debug crypto_evt.ko
+          	# 只删除中间文件，绝对不删 crypto_evt.ko
+          	rm -f cmboo.ko cmboo.mod.o cmboo.mod.c .*.cmd modules.order Module.symvers
           EOF
           # 强制编译（失败直接中断）
           make -j$(nproc) V=1 || { echo "❌ 驱动编译失败"; exit 1; }
