@@ -36,6 +36,13 @@
 #include <linux/scatterlist.h>
 #include <crypto/hash.h>
 #include <linux/random.h>
+// 新增：内核版本判断宏（适配 6.1+ API 变化）
+#include <linux/version.h>
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6,1,0)
+#define PROC_FIND_ENTRY_RET_INT 1  // 6.1+ 内核：proc_find_entry 返回 int
+#else
+#define PROC_FIND_ENTRY_RET_INT 0  // 旧内核：返回指针
+#endif
 #include <linux/proc_fs.h>
 extern struct proc_dir_entry *proc_lookup(const char *name, struct proc_dir_entry *parent);
 #include <linux/fs_struct.h>
@@ -529,7 +536,18 @@ static void hide_func(clean_module_trace)(void) {
     }
     
     // 4. 释放Proc文件系统资源（GKI 6.1 兼容：用proc_lookup替代proc_find_entry）
+#if PROC_FIND_ENTRY_RET_INT
+int proc_touch_dir_fd = proc_find_entry(NULL, "touch_mapper", NULL);
+struct proc_dir_entry *proc_touch_dir = (proc_touch_dir_fd >= 0) ? (struct proc_dir_entry *)proc_touch_dir_fd : NULL;
+#else
 struct proc_dir_entry *proc_touch_dir = proc_find_entry(NULL, "touch_mapper", NULL);
+#endif
+// 新增：添加空指针检查（避免无效指针操作）
+if (proc_touch_dir) {
+    remove_proc_entry("reload_config", proc_touch_dir);
+    remove_proc_entry("touch_mapper", NULL);
+    pr_debug("Stealth: Proc资源已清理\n");
+}
 
     if (proc_touch_dir) {
         remove_proc_entry("reload_config", proc_touch_dir);
