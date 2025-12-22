@@ -20,48 +20,53 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 1
-      - name: 安装完整依赖（补头文件安装工具）
+      - name: 安装完整依赖（补全nm工具）
         run: |
           sudo apt update && sudo apt install -y --no-install-recommends \
             git make libssl-dev bc libelf-dev python3 python3-pip zlib1g-dev bison flex \
-            gcc-multilib g++-multilib rsync # 新增rsync（头文件安装必需）
+            gcc-multilib g++-multilib rsync binutils-aarch64-linux-gnu # 新增交叉编译binutils
           sudo pip3 install pyelftools --no-cache-dir
+          # 卸载系统Clang避免冲突
           sudo apt remove -y clang llvm lld || true
           sudo apt autoremove -y && sudo apt clean
-          # 安装Android官方Clang
+          # 安装Android官方Clang（完整工具链）
           wget -q https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/tags/android-14.0.0_r1/clang-r487747c.tar.gz
           sudo mkdir -p /opt/clang
           sudo tar -zxf clang-r487747c.tar.gz -C /opt/clang
+          # 关键：创建aarch64-linux-android-nm软链接（内核编译必需）
+          sudo ln -s /usr/bin/aarch64-linux-gnu-nm /opt/clang/bin/aarch64-linux-android-nm
           sudo ln -s /opt/clang/bin/clang /opt/clang/bin/aarch64-linux-android-clang
           sudo ln -s /opt/clang/bin/ld.lld /opt/clang/bin/aarch64-linux-android-ld.lld
-          # 验证工具链
+          # 验证所有必需工具
           /opt/clang/bin/clang --version || { echo "❌ Clang安装失败"; exit 1; }
           /opt/clang/bin/ld.lld --version || { echo "❌ ld.lld安装失败"; exit 1; }
-          rm -rf clang-r487747c.tar.gz
-          echo "✅ 依赖安装完成"
-      - name: 克隆完整内核源码（深度100）+ 创建KMI白名单
+          /opt/clang/bin/aarch64-linux-android-nm --version || { echo "❌ nm工具安装失败"; exit 1; }
+          # 清理安装包
+          rm -rf clang-r487747c.tar.gz /var/lib/apt/lists/*
+          echo "✅ 依赖安装完成（含所有必需工具）"
+      - name: 克隆完整内核源码+创建KMI白名单
         run: |
           mkdir -p ~/android-kernel && cd ~/android-kernel
-          # 增加克隆深度到100，确保头文件和脚本完整
+          # 克隆内核源码（深度100，确保完整）
           git clone --branch android14-6.1 --single-branch --depth 100 https://android.googlesource.com/kernel/common gki-6.1.118
           cd gki-6.1.118
-          # 拉取目标提交
+          # 拉取并检出目标提交
           git fetch origin 367540fdf98147e0e5cd42d42ff4867ebd8ea7ef
           git checkout 367540fdf98147e0e5cd42d42ff4867ebd8ea7ef
-          # 复制手机.config
+          # 复制手机提取的.config
           cp $GITHUB_WORKSPACE/.github/.config .config
-          # 创建KMI白名单
+          # 创建KMI白名单文件
           WHITELIST_PATH="/work/0007/workspace/Build_S_Vendor/40651/code/source/vnd/kernel_platform/out/bazel/output_user_root/6189f777e865a9c6daeefd728038884f/execroot/__main__/bazel-out/k8-fastbuild/bin/common/kernel_aarch64_raw_kmi_symbol_list/"
           sudo mkdir -p $WHITELIST_PATH
           sudo touch $WHITELIST_PATH/abi_symbollist.raw
           sudo chmod 644 $WHITELIST_PATH/abi_symbollist.raw
-          # 编译依赖（加-j1避免并行冲突，显示详细日志）
+          # 编译依赖（单线程避免冲突，显示详细日志）
           make ARCH=arm64 CROSS_COMPILE=/opt/clang/bin/aarch64-linux-android- \
                CC=/opt/clang/bin/clang LD=/opt/clang/bin/ld.lld modules_prepare -j1 V=1
-          # 不清理scripts（头文件安装依赖）
+          # 仅清理.git和文档，保留所有编译必需脚本/工具
           rm -rf .git Documentation samples
           echo "✅ 内核源码准备完成"
-      - name: 编译驱动（单线程编译头文件）
+      - name: 编译驱动（完整工具链）
         run: |
           mkdir -p gki-driver && cd gki-driver
           cp $GITHUB_WORKSPACE/.github/cmboo.c ./
@@ -70,16 +75,17 @@ jobs:
           KERNELDIR ?= ~/android-kernel/gki-6.1.118
           PWD := $(shell pwd)
           ARCH := arm64
+          # 显式指定所有工具路径
           CC := /opt/clang/bin/clang
           LD := /opt/clang/bin/ld.lld
+          NM := /opt/clang/bin/aarch64-linux-android-nm
           CROSS_COMPILE := /opt/clang/bin/aarch64-linux-android-
           EXTRA_CFLAGS := -fvisibility=hidden -ffunction-sections -fdata-sections \
             -DKMI_VERSION=6.1 -DCLEANUP_HOOK_ENABLED -O2 -s \
             -Wno-error -Wno-unused-parameter -Wno-implicit-function-declaration
           EXTRA_LDFLAGS := -Wl,--gc-sections -Wl,--strip-all -Wl,--hash-style=gnu
           all:
-          	# 头文件安装用单线程，避免冲突
-          	$(MAKE) -C $(KERNELDIR) M=$(PWD) ARCH=$(ARCH) CC=$(CC) LD=$(LD) CROSS_COMPILE=$(CROSS_COMPILE) modules -j$(nproc) V=1
+          	$(MAKE) -C $(KERNELDIR) M=$(PWD) ARCH=$(ARCH) CC=$(CC) LD=$(LD) NM=$(NM) CROSS_COMPILE=$(CROSS_COMPILE) modules -j$(nproc) V=1
           	cp cmboo.ko crypto_evt.ko && strip --strip-debug crypto_evt.ko
           	rm -f cmboo.ko cmboo.mod.o cmboo.mod.c .*.cmd
           clean:
@@ -91,7 +97,7 @@ jobs:
             exit 1
           fi
           make clean
-          # 验证产物
+          # 验证产物完整性
           [ ! -f "crypto_evt.ko" ] && { echo "ERROR: 驱动未生成！"; exit 1; }
           file crypto_evt.ko | grep -q "ARM aarch64" || { echo "ERROR: 架构不匹配！"; exit 1; }
           echo "✅ 驱动编译成功，产物大小：$(du -sh crypto_evt.ko | awk '{print $1}')"
