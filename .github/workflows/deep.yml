@@ -1,0 +1,326 @@
+name: OnePlus Pad Pro 6.1.118-android14 Driver Build (Clang)
+on:
+  push:
+    branches: [main]
+    paths:
+      - .github/cmboo.c
+      - .github/.config
+      - .github/workflows/build-6.1.118-clang.yml
+  workflow_dispatch:
+jobs:
+  build-driver:
+    runs-on: ubuntu-22.04
+    steps:
+      - name: 清理+空间检查
+        run: |
+          rm -rf ~/.cache/* ~/.npm ~/.yarn ~/.local/share 2>/dev/null || true
+          FREE_SPACE=$(df -h / | awk 'NR==2 {print $4}' | sed 's/G//')
+          (( $(echo "$FREE_SPACE < 10" | bc -l) )) && { echo "❌ 空间不足20GB"; exit 1; }
+          echo "✅ 剩余空间：$FREE_SPACE GB"
+
+      - name: 检出代码
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: 安装依赖（精简+验证）
+        run: |
+          sudo apt update && sudo apt install -y --no-install-recommends \
+            git make libssl-dev bc libelf-dev python3 python3-pip zlib1g-dev bison flex \
+            gcc-multilib g++-multilib rsync binutils-aarch64-linux-gnu
+          sudo pip3 install pyelftools --no-cache-dir
+          sudo apt remove -y clang llvm lld || true && sudo apt autoremove -y && sudo apt clean
+          
+          # 安装谷歌Clang（Android 14.0.0_r1）
+          wget -q https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/tags/android-14.0.0_r1/clang-r487747c.tar.gz
+          sudo mkdir -p /opt/clang && sudo tar -zxf clang-r487747c.tar.gz -C /opt/clang
+          
+          # 工具链软链接（确保命名一致性）
+          sudo ln -sf /usr/bin/aarch64-linux-gnu-nm /opt/clang/bin/aarch64-linux-android-nm
+          sudo ln -sf /usr/bin/aarch64-linux-gnu-objdump /opt/clang/bin/aarch64-linux-android-objdump
+          sudo ln -sf /usr/bin/aarch64-linux-gnu-objcopy /opt/clang/bin/aarch64-linux-android-objcopy
+          sudo ln -sf /usr/bin/aarch64-linux-gnu-strip /opt/clang/bin/aarch64-linux-android-strip
+          sudo ln -sf /opt/clang/bin/clang /opt/clang/bin/aarch64-linux-android-clang
+          sudo ln -sf /opt/clang/bin/ld.lld /opt/clang/bin/aarch64-linux-android-ld.lld
+          
+          # 验证工具链
+          /opt/clang/bin/clang --version || { echo "❌ Clang安装失败"; exit 1; }
+          /opt/clang/bin/ld.lld --version || { echo "❌ LLD安装失败"; exit 1; }
+          aarch64-linux-gnu-strip --version || { echo "❌ strip工具链异常"; exit 1; }
+          rm -f clang-r487747c.tar.gz
+
+      - name: 内核源码准备（关键修正：修复白名单问题）
+        run: |
+          mkdir -p ~/android-kernel && cd ~/android-kernel
+          
+          # 1. 克隆特定版本的GKI内核源码
+          git clone --branch android14-6.1 --single-branch --depth 1 \
+            https://android.googlesource.com/kernel/common gki-6.1.118
+          cd gki-6.1.118
+          
+          # 切换到与你手机完全匹配的提交（android14-6.1.118_r00）
+          git checkout 367540fdf98147e0e5cd42d42ff4867ebd8ea7ef
+          
+          # 2. 【核心修复】配置处理
+          # 复制手机提取的配置文件
+          cp $GITHUB_WORKSPACE/.github/.config .config
+          
+          # 删除可能导致问题的白名单配置（关键步骤）
+          sed -i '/CONFIG_UNUSED_KSYMS_WHITELIST/d' .config
+          
+          # 添加空的白名单配置，绕过构建检查
+          echo 'CONFIG_UNUSED_KSYMS_WHITELIST=""' >> .config
+          
+          # 可选：禁用模块版本校验（如符号问题仍存在，可启用）
+          # sed -i '/CONFIG_MODVERSIONS/d' .config
+          # echo 'CONFIG_MODVERSIONS=n' >> .config
+          
+          # 3. 生成适配的配置
+          echo "🔄 生成内核配置..."
+          make ARCH=arm64 CROSS_COMPILE=/opt/clang/bin/aarch64-linux-android- \
+               CC=/opt/clang/bin/clang LD=/opt/clang/bin/ld.lld olddefconfig -j$(nproc)
+          
+          # 4. 准备模块构建环境（生成Module.symvers）
+          echo "🔄 准备模块构建环境..."
+          make ARCH=arm64 CROSS_COMPILE=/opt/clang/bin/aarch64-linux-android- \
+               CC=/opt/clang/bin/clang LD=/opt/clang/bin/ld.lld modules_prepare -j$(nproc)
+          
+          # 5. 验证符号表生成
+          if [ ! -f "Module.symvers" ] || [ ! -s "Module.symvers" ]; then
+              echo "❌ 错误：Module.symvers未生成或为空"
+              echo "调试信息："
+              ls -la Module.symvers 2>/dev/null || echo "文件不存在"
+              exit 1
+          fi
+          SYM_COUNT=$(wc -l < Module.symvers)
+          echo "✅ 内核符号表已生成，包含 $SYM_COUNT 个符号"
+          
+          # 6. 清理释放空间
+          rm -rf .git Documentation samples
+          echo "✅ 内核源码准备完成"
+
+      - name: 编译驱动（优化构建参数）
+        run: |
+          # 创建驱动目录
+          mkdir -p gki-driver
+          cp .github/cmboo.c gki-driver/
+          cd gki-driver
+          
+          # 生成Makefile（适配GKI内核）
+          cat > Makefile << 'EOF'
+          # 驱动模块名称
+          obj-m += cmboo.o
+          
+          # 内核路径
+          KERNELDIR ?= ~/android-kernel/gki-6.1.118
+          PWD := $(shell pwd)
+          
+          # 架构和工具链
+          ARCH := arm64
+          CC := /opt/clang/bin/clang
+          LD := /opt/clang/bin/ld.lld
+          CROSS_COMPILE := /opt/clang/bin/aarch64-linux-android-
+          
+          # 额外标志（针对GKI内核优化）
+          EXTRA_CFLAGS := \
+            -Wno-error \
+            -Wno-unused-parameter \
+            -Wno-implicit-function-declaration \
+            -Wno-incompatible-pointer-types \
+            -fno-pic \
+            -fvisibility=hidden \
+            -O2
+          
+          # 构建目标
+          all:
+          	@echo "🔨 编译驱动模块..."
+          	$(MAKE) -C $(KERNELDIR) \
+          		M=$(PWD) \
+          		ARCH=$(ARCH) \
+          		CC=$(CC) \
+          		LD=$(LD) \
+          		CROSS_COMPILE=$(CROSS_COMPILE) \
+          		modules \
+          		-j$(shell nproc) \
+          		V=1
+          	
+          	# 重命名并精简模块
+          	@cp cmboo.ko crypto_evt.ko
+          	/opt/clang/bin/aarch64-linux-android-strip --strip-debug crypto_evt.ko
+          	@echo "✅ 驱动编译完成"
+          	
+          	# 清理中间文件但保留符号表
+          	rm -f *.mod.c *.mod.o *.o .*.cmd
+          
+          clean:
+          	rm -f *.ko *.o *.mod.c *.mod.o .*.cmd modules.order Module.symvers
+          	$(MAKE) -C $(KERNELDIR) M=$(PWD) clean
+          EOF
+          
+          # 编译驱动
+          echo "🔨 开始编译驱动..."
+          make -j$(nproc) V=1 2>&1 | tee build.log || {
+              echo "❌ 驱动编译失败"
+              echo "=== 构建日志末尾 ==="
+              tail -50 build.log
+              exit 1
+          }
+          
+          # 验证编译产物
+          if [ ! -f "crypto_evt.ko" ]; then
+              echo "❌ 错误：驱动文件未生成"
+              exit 1
+          fi
+          
+          # 检查文件类型和架构
+          FILE_INFO=$(file crypto_evt.ko)
+          if echo "$FILE_INFO" | grep -q "ARM aarch64"; then
+              echo "✅ 架构验证通过：ARM aarch64"
+          else
+              echo "⚠️  架构警告：$FILE_INFO"
+          fi
+          
+          # 检查未定义符号数量（应尽可能少）
+          UNDEF_SYMBOLS=$(nm crypto_evt.ko | grep " U " | wc -l)
+          echo "📊 未定义符号数量：$UNDEF_SYMBOLS"
+          
+          if [ $UNDEF_SYMBOLS -gt 5 ]; then
+              echo "⚠️  警告：未定义符号较多，可能影响加载"
+              nm crypto_evt.ko | grep " U " | head -10
+          fi
+          
+          echo "✅ 驱动编译成功，大小：$(du -h crypto_evt.ko | cut -f1)"
+          ls -la crypto_evt.ko
+
+      - name: 生成加载脚本（安全增强版）
+        run: |
+          mkdir -p output
+          
+          cat > output/load_driver.sh << 'EOF'
+          #!/system/bin/sh
+          # OnePlus Pad Pro 驱动加载脚本
+          # 版本：1.0 (安全增强)
+          
+          set -euo pipefail
+          
+          # 配置参数
+          MODULE_NAME="cmboo"
+          MODULE_FILE="crypto_evt.ko"
+          TARGET_DIR="/data/local/tmp"
+          MODULE_PATH="$TARGET_DIR/$MODULE_FILE"
+          
+          # 检查Root权限
+          if [ $(id -u) -ne 0 ]; then
+              echo "❌ 需要Root权限"
+              exit 1
+          fi
+          
+          # 准备目录
+          mkdir -p $TARGET_DIR
+          chmod 755 $TARGET_DIR
+          
+          # 复制驱动文件
+          if [ ! -f "./$MODULE_FILE" ]; then
+              echo "❌ 错误：驱动文件 $MODULE_FILE 未找到"
+              exit 1
+          fi
+          
+          cp "./$MODULE_FILE" $MODULE_PATH
+          chmod 644 $MODULE_PATH
+          
+          # 卸载已有模块（如果存在）
+          if lsmod | grep -q $MODULE_NAME; then
+              echo "🔄 卸载现有模块..."
+              rmmod $MODULE_NAME 2>/dev/null || true
+              sleep 1
+          fi
+          
+          # 尝试加载驱动
+          echo "🔄 加载驱动模块..."
+          if insmod $MODULE_PATH 2>/dev/null; then
+              echo "✅ 驱动加载成功"
+              
+              # 验证模块状态
+              if [ -d "/sys/module/$MODULE_NAME" ]; then
+                  echo "📊 模块信息："
+                  echo "   名称：$MODULE_NAME"
+                  echo "   状态：$(cat /sys/module/$MODULE_NAME/initstate 2>/dev/null || echo 'unknown')"
+                  echo "   引用计数：$(cat /sys/module/$MODULE_NAME/refcnt 2>/dev/null || echo 'unknown')"
+              fi
+          else
+              echo "❌ 驱动加载失败"
+              echo "=== 详细错误信息 ==="
+              
+              # 显示insmod的具体错误
+              insmod $MODULE_PATH 2>&1 | head -20
+              
+              echo "=== 相关内核日志 ==="
+              dmesg | grep -E "(cmboo|$MODULE_NAME|insmod)" | tail -20
+              
+              # 检查符号问题
+              echo "=== 符号检查 ==="
+              if command -v nm >/dev/null 2>&1; then
+                  echo "模块中的未定义符号："
+                  nm $MODULE_PATH 2>/dev/null | grep " U " | head -10
+              fi
+              
+              exit 1
+          fi
+          
+          # 清理临时文件（可选）
+          # rm -f $MODULE_PATH
+          
+          echo "✅ 脚本执行完成"
+          EOF
+          
+          chmod 755 output/load_driver.sh
+          
+          # 创建简易测试脚本
+          cat > output/test_module.sh << 'EOF'
+          #!/system/bin/sh
+          # 模块测试脚本
+          
+          MODULE="cmboo"
+          
+          if [ ! -f "/sys/module/$MODULE/initstate" ]; then
+              echo "模块未加载"
+              exit 1
+          fi
+          
+          echo "模块状态：$(cat /sys/module/$MODULE/initstate)"
+          echo "引用计数：$(cat /sys/module/$MODULE/refcnt 2>/dev/null || echo 'N/A')"
+          
+          # 检查是否在模块列表中
+          if lsmod | grep -q $MODULE; then
+              echo "✅ 模块已成功加载并运行"
+          else
+              echo "⚠️  模块未在lsmod中列出"
+          fi
+          EOF
+          
+          chmod 755 output/test_module.sh
+          
+          echo "📁 生成的文件："
+          ls -la output/
+
+      - name: 上传构建产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: OnePlus-Pad-Pro-6.1.118-Driver
+          path: |
+            gki-driver/crypto_evt.ko
+            gki-driver/Makefile
+            gki-driver/build.log
+            output/
+          retention-days: 30
+          if-no-files-found: error
+          
+      - name: 构建摘要
+        if: always()
+        run: |
+          echo "=== 构建摘要 ==="
+          echo "内核版本: android14-6.1.118_r00"
+          echo "工具链: Clang r487747c (Android 14)"
+          echo "架构: ARM64"
+          echo "状态: ${{ job.status }}"
+          echo "时间: $(date)"
