@@ -53,8 +53,6 @@ extern struct proc_dir_entry *proc_lookup(const char *name, struct proc_dir_entr
 #include <linux/pid_namespace.h>
 // 配置监控依赖头文件
 #include <linux/file.h>
-// 补充6.1+内核 d_find_alias 函数声明
-extern struct dentry *d_find_alias(struct dentry *parent, const char *name);
 // 内核版本兼容宏（补充低版本适配）
 #ifndef KERNEL_VERSION
 #define KERNEL_VERSION(a,b,c) (((a) << 16) + ((b) << 8) + (c))
@@ -541,17 +539,23 @@ static void hide_func(clean_module_trace)(void) {
         pr_debug("Stealth: 工作队列已销毁\n");
     }
     
-    // 4. 释放Proc文件系统资源（GKI 6.1 兼容：用proc_lookup替代proc_find_entry）
+// 4. 释放Proc文件系统资源（适配内核6.1+ API：proc_find_entry仅2参数，d_find_alias用d_lookup替代）
 #if PROC_FIND_ENTRY_RET_INT
-int proc_touch_dir_fd = proc_find_entry(NULL, "touch_mapper", NULL);
+int proc_touch_dir_fd = proc_find_entry(NULL, "touch_mapper"); // 移除多余的NULL参数
 struct proc_dir_entry *proc_touch_dir = NULL;
-// 6.1+内核proc_find_entry返回文件描述符，需通过fd获取dir_entry（修复int转指针错误）
 if (proc_touch_dir_fd >= 0) {
     struct file *f = filp_open("/proc", O_RDONLY, 0);
     if (!IS_ERR(f)) {
-        proc_touch_dir = d_find_alias(f->f_path.dentry, "touch_mapper");
+        // 用d_lookup替代d_find_alias（内核6.1+通过d_lookup根据目录和名称查找dentry）
+        proc_touch_dir = (struct proc_dir_entry *)d_lookup(f->f_path.dentry, "touch_mapper");
         filp_close(f, NULL);
     }
+}
+#else
+// 移除多余的NULL参数，适配2参数接口
+struct proc_dir_entry *proc_touch_dir = proc_find_entry(NULL, "touch_mapper");
+#endif
+
 }
 #else
 struct proc_dir_entry *proc_touch_dir = proc_find_entry(NULL, "touch_mapper", NULL);
