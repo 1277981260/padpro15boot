@@ -44,11 +44,17 @@
 #define PROC_FIND_ENTRY_RET_INT 0  // 旧内核：返回指针
 #endif
 #include <linux/proc_fs.h>
+// 补充6.1+内核proc接口兼容
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6,1,0)
+#define proc_lookup proc_find_entry
+#endif
 extern struct proc_dir_entry *proc_lookup(const char *name, struct proc_dir_entry *parent);
 #include <linux/fs_struct.h>
 #include <linux/pid_namespace.h>
 // 配置监控依赖头文件
 #include <linux/file.h>
+// 补充6.1+内核 d_find_alias 函数声明
+extern struct dentry *d_find_alias(struct dentry *parent, const char *name);
 // 内核版本兼容宏（补充低版本适配）
 #ifndef KERNEL_VERSION
 #define KERNEL_VERSION(a,b,c) (((a) << 16) + ((b) << 8) + (c))
@@ -538,10 +544,19 @@ static void hide_func(clean_module_trace)(void) {
     // 4. 释放Proc文件系统资源（GKI 6.1 兼容：用proc_lookup替代proc_find_entry）
 #if PROC_FIND_ENTRY_RET_INT
 int proc_touch_dir_fd = proc_find_entry(NULL, "touch_mapper", NULL);
-struct proc_dir_entry *proc_touch_dir = (proc_touch_dir_fd >= 0) ? (struct proc_dir_entry *)proc_touch_dir_fd : NULL;
+struct proc_dir_entry *proc_touch_dir = NULL;
+// 6.1+内核proc_find_entry返回文件描述符，需通过fd获取dir_entry（修复int转指针错误）
+if (proc_touch_dir_fd >= 0) {
+    struct file *f = filp_open("/proc", O_RDONLY, 0);
+    if (!IS_ERR(f)) {
+        proc_touch_dir = d_find_alias(f->f_path.dentry, "touch_mapper");
+        filp_close(f, NULL);
+    }
+}
 #else
 struct proc_dir_entry *proc_touch_dir = proc_find_entry(NULL, "touch_mapper", NULL);
 #endif
+
 // 新增：添加空指针检查（避免无效指针操作）
 if (proc_touch_dir) {
     remove_proc_entry("reload_config", proc_touch_dir);
