@@ -76,7 +76,7 @@ jobs:
           echo "CONFIG_MODULE_UNLOAD=y" >> .config
           echo "# CONFIG_MODULE_SIG is not set" >> .config
 
-      - name: 【关键步骤】完整编译内核
+      - name: 完整编译内核（关键步骤）
         run: |
           cd ~/android-kernel/gki-6.1.118
           
@@ -221,7 +221,6 @@ EOF
           cat > output/load_driver.sh << 'EOF'
 #!/system/bin/sh
 # OnePlus Pad Pro 驱动加载脚本
-# 内核版本: $KERNEL_VERSION
 # 构建时间: $(date)
 
 set -euo pipefail
@@ -231,7 +230,7 @@ MODULE_FILE="crypto_evt.ko"
 MODULE_PATH="/data/local/tmp/$MODULE_FILE"
 
 echo "=== OnePlus Pad Pro 驱动加载工具 ==="
-echo "内核版本: $KERNEL_VERSION"
+echo "内核版本: $(uname -r)"
 echo "模块文件: $MODULE_FILE"
 echo ""
 
