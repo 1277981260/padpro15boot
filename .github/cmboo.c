@@ -539,34 +539,11 @@ static void hide_func(clean_module_trace)(void) {
         pr_debug("Stealth: 工作队列已销毁\n");
     }
     
-// 4. 释放Proc文件系统资源（适配内核6.1+ API：proc_find_entry仅2参数，d_find_alias用d_lookup替代）
-#if PROC_FIND_ENTRY_RET_INT
-int proc_touch_dir_fd = proc_find_entry(NULL, "touch_mapper"); // 移除多余的NULL参数
-struct proc_dir_entry *proc_touch_dir = NULL;
-if (proc_touch_dir_fd >= 0) {
-    struct file *f = filp_open("/proc", O_RDONLY, 0);
-    if (!IS_ERR(f)) {
-        // 用d_lookup替代d_find_alias（内核6.1+通过d_lookup根据目录和名称查找dentry）
-        proc_touch_dir = (struct proc_dir_entry *)d_lookup(f->f_path.dentry, "touch_mapper");
-        filp_close(f, NULL);
-    }
-}
-#else
-// 移除多余的NULL参数，适配2参数接口
-struct proc_dir_entry *proc_touch_dir = proc_find_entry(NULL, "touch_mapper");
-#endif
 
-}
-#else
-struct proc_dir_entry *proc_touch_dir = proc_find_entry(NULL, "touch_mapper", NULL);
-#endif
+        remove_proc_entry("reload_config", NULL); // 移除具体的文件
+  remove_proc_entry("touch_mapper", NULL);  // 移除我们创建的目录
+  pr_debug("Stealth: Proc资源已清理\n");
 
-// 新增：添加空指针检查（避免无效指针操作）
-if (proc_touch_dir) {
-    remove_proc_entry("reload_config", proc_touch_dir);
-    remove_proc_entry("touch_mapper", NULL);
-    pr_debug("Stealth: Proc资源已清理\n");
-}
     
     // 5. 释放配置文件内存
     if (stealth_dev && stealth_dev->config.keymap_list) {
@@ -1554,9 +1531,7 @@ if (ret) goto err_unregister_chrdev;
 
 // 创建设备类
 stealth_dev->class = class_create(THIS_MODULE, CLASS_NAME);
-// 为设备类添加属性组（修复 sysfs 注册）
-class_set_groups(stealth_dev->class, stealth_attr_groups);
-if (IS_ERR(stealth_dev->class)) {
+  if (IS_ERR(stealth_dev->class)) {
     ret = PTR_ERR(stealth_dev->class);
     goto err_del_cdev;
 }
@@ -1565,6 +1540,14 @@ if (IS_ERR(stealth_dev->class)) {
 stealth_dev->device = device_create(stealth_dev->class, NULL, stealth_dev->devno, NULL, DEVICE_NAME);
 if (IS_ERR(stealth_dev->device)) {
     ret = PTR_ERR(stealth_dev->device);
+    goto err_destroy_class;
+}
+// 设备创建成功，现在关联sysfs属性组
+ret = sysfs_create_group(&stealth_dev->device->kobj, &stealth_attr_group);
+if (ret) {
+    pr_err("Failed to create sysfs group for device\n");
+    // 创建失败，需要回滚：销毁设备，然后跳转到错误处理
+    device_destroy(stealth_dev->class, stealth_dev->devno);
     goto err_destroy_class;
 }
 
@@ -1639,6 +1622,7 @@ err_free_dev:
 kfree(stealth_dev);
 return ret;
 }
+
 // 驱动退出（优化配置监控清理，无残留）
 static void __exit stealth_driver_exit(void) {
     if (!stealth_dev) return;
@@ -1650,9 +1634,7 @@ static void __exit stealth_driver_exit(void) {
     // 停止配置监控工作队列（完整清理，避免内存泄漏）
     if (work_pending(&config_monitor.monitor_work.work)) {
         cancel_delayed_work_sync(&config_monitor.monitor_work);
-        // 替换原 flush_workqueue(system_wq)
-flush_delayed_work(&config_monitor.monitor_work);
- // 确保工作队列完全退出
+        flush_delayed_work(&config_monitor.monitor_work); // 确保我们自己的监控工作完成
     }
     // 注销输入处理器
     input_unregister_handler(&stealth_input_handler);
@@ -1666,10 +1648,12 @@ flush_delayed_work(&config_monitor.monitor_work);
         destroy_workqueue(stealth_dev->workqueue);
         stealth_dev->workqueue = NULL;
     }
-    // 清理设备节点和类
+    // 清理sysfs属性组和设备节点
     if (stealth_dev->device) {
+        sysfs_remove_group(&stealth_dev->device->kobj, &stealth_attr_group);
         device_destroy(stealth_dev->class, stealth_dev->devno);
     }
+    // 清理设备类
     if (stealth_dev->class && !IS_ERR(stealth_dev->class)) {
         class_destroy(stealth_dev->class);
     }
