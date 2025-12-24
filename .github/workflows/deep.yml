@@ -1,39 +1,41 @@
 name: OnePlus Pad Pro 6.1.118完整编译工作流
+
 on:
   push:
     branches: [main]
     paths:
-      - .github/cmboo.c
-      - .github/.config
-      - .github/workflows/build-6.1.118-clang.yml
+      - '.github/cmboo.c'
+      - '.github/.config'
+      - '.github/workflows/build-6.1.118-clang.yml'
   workflow_dispatch:
 
 jobs:
   build-kernel-and-driver:
     runs-on: ubuntu-22.04
     timeout-minutes: 90
+    
     steps:
       - name: 清理+空间检查
         run: |
           rm -rf ~/.cache/* ~/.npm ~/.yarn ~/.local/share 2>/dev/null || true
           FREE_SPACE=$(df -h / | awk 'NR==2 {print $4}' | sed 's/G//')
-          (( $(echo "$FREE_SPACE < 30" | bc -l) )) && { echo "❌ 空间不足30GB"; exit 1; }
+          (( $(echo "$FREE_SPACE < 10" | bc -l) )) && { echo "❌ 空间不足30GB"; exit 1; }
           echo "✅ 剩余空间：$FREE_SPACE GB"
-          
+
       - name: 检出代码
         uses: actions/checkout@v4
         with:
           fetch-depth: 1
-          
+
       - name: 安装依赖（完整编译版）
         run: |
           sudo apt update && sudo apt install -y --no-install-recommends \
             git make libssl-dev bc libelf-dev python3 python3-pip zlib1g-dev bison flex \
             gcc-multilib g++-multilib rsync binutils-aarch64-linux-gnu \
-            libncurses-dev lzop cpio kmod gawk wget
+            libncurses-dev lzop cpio kmod gawk wget bc
           sudo pip3 install pyelftools --no-cache-dir
           
-          # 安装谷歌Clang（使用更新的版本）
+          # 安装谷歌Clang
           wget -q https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/tags/android-14.0.0_r1/clang-r487747c.tar.gz
           sudo mkdir -p /opt/clang && sudo tar -zxf clang-r487747c.tar.gz -C /opt/clang
           
@@ -47,7 +49,7 @@ jobs:
           # 验证工具链
           /opt/clang/bin/clang --version || { echo "❌ Clang失败"; exit 1; }
           rm -f clang-r487747c.tar.gz
-          
+
       - name: 内核源码准备
         run: |
           mkdir -p ~/android-kernel && cd ~/android-kernel
@@ -73,7 +75,7 @@ jobs:
           echo "CONFIG_MODULES=y" >> .config
           echo "CONFIG_MODULE_UNLOAD=y" >> .config
           echo "# CONFIG_MODULE_SIG is not set" >> .config
-          
+
       - name: 【关键步骤】完整编译内核
         run: |
           cd ~/android-kernel/gki-6.1.118
@@ -117,7 +119,7 @@ jobs:
           echo "📋 内核版本信息："
           make ARCH=arm64 CROSS_COMPILE=/opt/clang/bin/aarch64-linux-android- \
                kernelversion 2>/dev/null || true
-          
+
       - name: 编译驱动模块
         run: |
           echo "🔨 开始编译驱动模块..."
@@ -203,7 +205,7 @@ EOF
               aarch64-linux-gnu-nm crypto_evt.ko 2>/dev/null | grep " U " | head -5
             fi
           fi
-          
+
       - name: 生成加载脚本和打包
         run: |
           mkdir -p output
@@ -216,7 +218,7 @@ EOF
           KERNEL_VERSION=$(make ARCH=arm64 kernelversion 2>/dev/null || echo "6.1.118")
           
           # 生成智能加载脚本
-          cat > output/load_driver.sh << EOF
+          cat > output/load_driver.sh << 'EOF'
 #!/system/bin/sh
 # OnePlus Pad Pro 驱动加载脚本
 # 内核版本: $KERNEL_VERSION
@@ -226,49 +228,49 @@ set -euo pipefail
 
 MODULE_NAME="cmboo"
 MODULE_FILE="crypto_evt.ko"
-MODULE_PATH="/data/local/tmp/\$MODULE_FILE"
+MODULE_PATH="/data/local/tmp/$MODULE_FILE"
 
 echo "=== OnePlus Pad Pro 驱动加载工具 ==="
 echo "内核版本: $KERNEL_VERSION"
-echo "模块文件: \$MODULE_FILE"
+echo "模块文件: $MODULE_FILE"
 echo ""
 
 # 检查root权限
-if [ "\$(id -u)" -ne 0 ]; then
+if [ "$(id -u)" -ne 0 ]; then
   echo "⚠️  需要root权限"
   exit 1
 fi
 
 # 复制驱动到设备
 echo "复制驱动到设备..."
-cp "\$MODULE_FILE" "\$MODULE_PATH" 2>/dev/null || {
+cp "$MODULE_FILE" "$MODULE_PATH" 2>/dev/null || {
   echo "❌ 无法复制驱动文件"
   exit 1
 }
-chmod 600 "\$MODULE_PATH"
+chmod 600 "$MODULE_PATH"
 
 # 检查模块是否已加载
-if lsmod | grep -q "\$MODULE_NAME"; then
+if lsmod | grep -q "$MODULE_NAME"; then
   echo "⚠️  驱动已加载，先卸载..."
-  rmmod "\$MODULE_NAME" 2>/dev/null || true
+  rmmod "$MODULE_NAME" 2>/dev/null || true
   sleep 1
 fi
 
 # 加载驱动
 echo "加载驱动..."
-if insmod "\$MODULE_PATH"; then
+if insmod "$MODULE_PATH"; then
   echo "✅ 驱动加载成功"
   
   # 验证加载
-  if lsmod | grep -q "\$MODULE_NAME"; then
+  if lsmod | grep -q "$MODULE_NAME"; then
     echo "✅ 模块已在内核中注册"
     
     # 显示模块信息
-    if [ -d "/sys/module/\$MODULE_NAME" ]; then
+    if [ -d "/sys/module/$MODULE_NAME" ]; then
       echo "模块信息:"
-      echo "  名称: \$MODULE_NAME"
-      echo "  状态: \$(cat /sys/module/\$MODULE_NAME/initstate 2>/dev/null || echo 'active')"
-      echo "  引用计数: \$(cat /sys/module/\$MODULE_NAME/refcnt 2>/dev/null || echo '1')"
+      echo "  名称: $MODULE_NAME"
+      echo "  状态: $(cat /sys/module/$MODULE_NAME/initstate 2>/dev/null || echo 'active')"
+      echo "  引用计数: $(cat /sys/module/$MODULE_NAME/refcnt 2>/dev/null || echo '1')"
     fi
   else
     echo "⚠️  模块未在lsmod中显示"
@@ -276,12 +278,12 @@ if insmod "\$MODULE_PATH"; then
   
   # 显示内核日志
   echo "最近的内核消息:"
-  dmesg | tail -20 | grep -i "\$MODULE_NAME\|crypto\|evt" || echo "无相关日志"
+  dmesg | tail -20 | grep -i "$MODULE_NAME\|crypto\|evt" || echo "无相关日志"
   
 else
   echo "❌ 驱动加载失败"
   echo "=== 详细错误 ==="
-  insmod "\$MODULE_PATH" 2>&1
+  insmod "$MODULE_PATH" 2>&1
   echo ""
   echo "=== 内核日志 ==="
   dmesg | tail -30
@@ -296,7 +298,7 @@ EOF
           
           # 生成构建报告
           cd ~/android-kernel/gki-6.1.118
-          cat > output/build_report.txt << EOF
+          cat > output/build_report.txt << 'EOF'
 OnePlus Pad Pro 内核驱动构建报告
 ==================================
 构建时间: $(date)
@@ -325,7 +327,7 @@ EOF
           
           echo "📦 打包文件清单："
           ls -la output/
-          
+
       - name: 上传构建产物
         uses: actions/upload-artifact@v4
         with:
