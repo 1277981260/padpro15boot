@@ -19,7 +19,10 @@ jobs:
         run: |
           rm -rf ~/.cache/* ~/.npm ~/.yarn ~/.local/share 2>/dev/null || true
           FREE_SPACE=$(df -h / | awk 'NR==2 {print $4}' | sed 's/G//')
-          (( $(echo "$FREE_SPACE < 10" | bc -l) )) && { echo "❌ 空间不足30GB"; exit 1; }
+          if (( $(echo "$FREE_SPACE < 10" | bc -l) )); then
+            echo "❌ 空间不足30GB"
+            exit 1
+          fi
           echo "✅ 剩余空间：$FREE_SPACE GB"
 
       - name: 检出代码
@@ -296,25 +299,13 @@ EOF
           chmod 755 output/load_driver.sh
           
           # 生成构建报告
-          cd ~/android-kernel/gki-6.1.118
           cat > output/build_report.txt << 'EOF'
 OnePlus Pad Pro 内核驱动构建报告
 ==================================
 构建时间: $(date)
-内核版本: $(make ARCH=arm64 kernelversion 2>/dev/null || echo "6.1.118")
+内核版本: 6.1.118
 构建系统: GitHub Actions Ubuntu 22.04
-编译器: $(/opt/clang/bin/clang --version | head -1)
-
-内核配置摘要:
-- MODULES: $(grep -c "CONFIG_MODULES=y" .config || echo "未设置")
-- 模块签名: $(grep -c "CONFIG_MODULE_SIG" .config || echo "禁用")
-
-符号表信息:
-- Module.symvers 符号数量: $(wc -l < Module.symvers 2>/dev/null || echo "0")
-
-驱动模块信息:
-- 文件名: crypto_evt.ko
-- 大小: $(ls -lh ~/gki-driver/crypto_evt.ko 2>/dev/null | awk '{print $5}' || echo "未知")
+编译器: Google Clang
 
 使用说明:
 1. 将 crypto_evt.ko 和 load_driver.sh 复制到设备
@@ -333,7 +324,5 @@ EOF
           name: OnePlus-PadPro-Complete-Build
           path: |
             output/
-            ~/android-kernel/gki-6.1.118/.config
-            ~/android-kernel/gki-6.1.118/Module.symvers
           retention-days: 30
           if-no-files-found: error
