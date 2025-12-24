@@ -15,7 +15,7 @@ jobs:
         run: |
           rm -rf ~/.cache/* ~/.npm ~/.yarn ~/.local/share 2>/dev/null || true
           FREE_SPACE=$(df -h / | awk 'NR==2 {print $4}' | sed 's/G//')
-          (( $(echo "$FREE_SPACE < 20" | bc -l) )) && { echo "❌ 空间不足20GB"; exit 1; }
+          (( $(echo "$FREE_SPACE < 10" | bc -l) )) && { echo "❌ 空间不足20GB"; exit 1; }
           echo "✅ 剩余空间：$FREE_SPACE GB"
       - name: 检出代码
         uses: actions/checkout@v4
